@@ -216,6 +216,30 @@ module.exports = function(grunt) {
           }
         ]
       },
+      localhost: {
+        options: {
+          hostname: '*',
+          port: 9000,
+          middleware: function(connect) {
+            return [proxySnippet];
+          }
+        },
+        proxies: [
+          {
+            context: '/alfresco',  // '/api'
+            host: '127.0.0.1',//128.149.16.152',
+            port: 8080,
+            changeOrigin: true,
+            https: false,
+          },
+          {
+            context: '/',
+            host: 'localhost',
+            port: 9001
+          }
+        ]
+      },
+      
       emstest: {
         options: {
           hostname: '*',
