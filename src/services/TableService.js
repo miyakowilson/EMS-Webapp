@@ -32,9 +32,10 @@ function TableService($q, $http, URLService, UtilsService, CacheService, _, Elem
     return deferred.promise;
   } //end of readValues
   
-
-
-  function readvalues(plot, projectId, refId, commitId){ 
+	function readvalues(plot, projectId, refId, commitId){
+		return readvalues1(plot, projectId, refId, commitId, false);
+	}
+    function readvalues1(plot, projectId, refId, commitId, includecolumn0){ 
 
     var deferred = $q.defer();
 
@@ -42,7 +43,7 @@ function TableService($q, $http, URLService, UtilsService, CacheService, _, Elem
     var isHeader = (plot.table.header !== undefined && plot.table.header.length > 0 ? true : false);
 
     if (isHeader) {
-      var aheader = asyncReadTableHeader(aMmsEid, plot.table.header[0]);
+      var aheader = asyncReadTableHeader(aMmsEid, plot.table.header[0], includecolumn0);
       aheader.then( function(tableheader){
         var abody = asyncReadTableBody(aMmsEid, plot.table.body);
         abody.then( function(tablebody){
@@ -61,14 +62,15 @@ function TableService($q, $http, URLService, UtilsService, CacheService, _, Elem
     return deferred.promise;
   } //end of readValues
   
+	 
+ 
 
-
-
-  function asyncReadTableHeader(aMmsEid, header){ 
+  function asyncReadTableHeader(aMmsEid, header, includecolumn0){ 
     return $q( function(resolve){
       readRowValues(header, aMmsEid)
         .then(function(tableheader) {
-        tableheader.values.shift(); //remove 1st element
+			if (!includecolumn0)
+				tableheader.values.shift(); //remove 1st element
         resolve(tableheader.values);
       });
     });
@@ -299,7 +301,8 @@ function TableService($q, $http, URLService, UtilsService, CacheService, _, Elem
         toValidId : toValidId,
         plotConfig: plotConfig,
         readvalues: readvalues,  //for row values in number index
-        readvalues2: readvalues2 //for row values with named(header) index
+        readvalues2: readvalues2, //for row values with named(header) index
+		readvalues1: readvalues1, //readvalue but not having boolean argument whether to include column0 header name
     };
 
 }
