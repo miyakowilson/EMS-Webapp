@@ -38,6 +38,10 @@ module.exports = function(grunt) {
         serverPort = 8080;
         serverHttps = false;
       }
+	  else if (key === "gt") {
+        serverPort = 20085;
+        serverHttps = false;
+      }
       connectObject[key] = {
         options: {
           hostname: '*',
@@ -62,7 +66,7 @@ module.exports = function(grunt) {
           }
         },
         proxies: [
-          {
+          /*{
             context: '/mms-ts',
             host: 'mms-ts-uat.jpl.nasa.gov',//'localhost',//'100.64.243.161',
             port: 8080
@@ -72,7 +76,7 @@ module.exports = function(grunt) {
             https: serverHttps,
             host: servers[key],
             port: serverPort
-          },
+          },*/
           {
             context: '/alfresco',  // '/api'
             host: servers[key],
@@ -316,8 +320,8 @@ module.exports = function(grunt) {
         }
       }
     },
-
-    ngdocs: {
+	ngdocs :{},
+    ngdocsxx: {
       options: {
         dest: 'dist/docs',
         html5Mode: false,
