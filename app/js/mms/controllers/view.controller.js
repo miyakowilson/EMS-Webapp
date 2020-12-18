@@ -3,395 +3,256 @@
 /* Controllers */
 
 angular.module('mmsApp')
-.controller('ViewCtrl', ['$scope', '$rootScope', '$state', '$stateParams', '$timeout', '$modal', '$window', 'viewElements', 'ElementService', 'ViewService', 'ConfigService', 'time', 'growl', 'workspace', 'site', 'document', 'view', 'tag', 'snapshot', 'UxService',
-function($scope, $rootScope, $state, $stateParams, $timeout, $modal, $window, viewElements, ElementService, ViewService, ConfigService, time, growl, workspace, site, document, view, tag, snapshot, UxService) {
-    
-    $scope.$on('$viewContentLoaded', 
-        function(event) {
-            $rootScope.mms_viewContentLoading = false; 
-        }
-    );
+    .controller('ViewCtrl', ['$scope', '$rootScope', '$state', '$timeout', '$window', '$location',
+    '$http', '$element', 'growl', 'hotkeys', 'MmsAppUtils', 'UxService', 'URLService', 'UtilsService', 'ShortenUrlService', 'Utils',
+    'search', 'orgOb', 'projectOb', 'refOb', 'groupOb', 'documentOb', 'viewOb',
+    function($scope, $rootScope, $state, $timeout, $window, $location, $http,
+             $element, growl, hotkeys, MmsAppUtils, UxService, URLService, UtilsService, ShortenUrlService, Utils,
+             search, orgOb, projectOb, refOb, groupOb, documentOb, viewOb) {
 
-    if ($state.includes('workspace') && !$state.includes('workspace.sites')) {
-        $rootScope.mms_showSiteDocLink = true;
-    } else {
-        $rootScope.mms_showSiteDocLink = false;
+    function isPageLoading() {
+        if ($element.find('.isLoading').length > 0) {
+            growl.warning("Still loading!");
+            return true;
+        }
+        return false;
     }
 
-    // show the tag descriptions if document is null 
-    $rootScope.mms_showTagDescriptionFix = false;
-    if ($state.includes('workspace') && !$state.includes('workspace.sites')) {
-        // if document is null, and there is a tag, then save the tag to be used for
-        // the tag cover page
-        if (document === null && time !== 'latest' && tag !== null) {
-            $rootScope.mms_showTagDescriptionFix = true;
-            $rootScope.mms_showSiteDocLink = false;
-            $scope.tag = tag;
-        }
-    }
-
-    $scope.showFilter = false;
-    if ($state.current.name === 'workspace.site')
-        $scope.showFilter = true;
-    
-    $scope.vidLink = false;
-    if ($state.includes('workspace.site.documentpreview')) {
+    $scope.vidLink = false; //whether to have go to document link
+    if ($state.includes('project.ref.preview') && viewOb && viewOb.id.indexOf('_cover') < 0) {
         $scope.vidLink = true;
     }
-
-    $scope.tagId = undefined;
-    if (tag.timestamp !== 'latest')
-        $scope.tagId = tag.id;
 
     if (!$rootScope.veCommentsOn)
         $rootScope.veCommentsOn = false;
     if (!$rootScope.veElementsOn)
         $rootScope.veElementsOn = false;
+    if (!$rootScope.ve_editmode)
+        $rootScope.ve_editmode = false;
 
-    var ws = $stateParams.workspace;
+    $scope.search = search;
+    Utils.toggleLeftPane(search);
+    $scope.viewOb = viewOb;
+    $scope.projectOb = projectOb;
+    $scope.refOb = refOb;
 
-    $scope.view = view;
-    $scope.viewElements = viewElements;
-    $scope.site = site;
-    var elementSaving = false;
-    $scope.bbApi = {};
     $scope.buttons = [];
-
-    $scope.bbApi.init = function() {
-        if (view && view.editable && time === 'latest') {
-            $scope.bbApi.addButton(UxService.getButtonBarButton('edit.view.documentation'));
-        }
-
-        $scope.bbApi.addButton(UxService.getButtonBarButton('edit.view.documentation.save'));
-        $scope.bbApi.addButton(UxService.getButtonBarButton('edit.view.documentation.cancel'));
-        $scope.bbApi.addButton(UxService.getButtonBarButton('show.comments'));
-        $scope.bbApi.setToggleState('show.comments', $rootScope.veCommentsOn);
-        $scope.bbApi.addButton(UxService.getButtonBarButton('show.elements'));
-        $scope.bbApi.setToggleState('show.elements', $rootScope.veElementsOn);
-
-        // TODO: This code is duplicated in the FullDocCtrl
-        // **WARNING** IF YOU CHANGE THIS CODE, NEED TO UPDATE IN FULL DOC CTRL TOO
-
-        if ($state.includes('workspace.site.document') || $state.includes('workspace.site.documentpreview')) {
-            if (snapshot !== null) {
-                var pdfUrl = getPDFUrl();
-                if (pdfUrl !== null && pdfUrl !== undefined) {
-                    $scope.bbApi.addButton(UxService.getButtonBarButton('download.pdf'));                
-                } else {
-                    $scope.bbApi.addButton(UxService.getButtonBarButton('generate.pdf'));
-
-                    var pdfStatus = getPDFStatus();
-                    if (pdfStatus === 'Generating...')
-                        $scope.bbApi.toggleButtonSpinner('generate.pdf');
-                    else if (pdfStatus !== null)
-                        $scope.bbApi.setTooltip('generate.pdf', pdfStatus);
-                }
-
-                var zipUrl = getZipUrl();
-                if (zipUrl !== null && zipUrl !== undefined) {
-                    $scope.bbApi.addButton(UxService.getButtonBarButton('download.zip'));                
-                } else {
-                    $scope.bbApi.addButton(UxService.getButtonBarButton('generate.zip'));
-
-                    var zipStatus = getZipStatus();
-                    if (zipStatus === 'Generating...')
-                        $scope.bbApi.toggleButtonSpinner('generate.zip');
-                    else if (zipStatus !== null)
-                        $scope.bbApi.setTooltip('generate.zip', zipStatus);
+    $scope.viewApi = {
+        init: function() {
+            if ($rootScope.veCommentsOn) {
+                $scope.viewApi.toggleShowComments();
+            }
+            if ($rootScope.veElementsOn) {
+                $scope.viewApi.toggleShowElements();
+            }
+            if ($rootScope.ve_editmode) {
+                $scope.viewApi.toggleShowEdits();
+            }
+        },
+        elementTranscluded: function(elementOb, type) {
+            if (type === 'Comment' && !$scope.comments.map.hasOwnProperty(elementOb.id)) {
+                $scope.comments.map[elementOb.id] = elementOb;
+                $scope.comments.count++;
+                if (elementOb._modified > $scope.comments.lastCommented) {
+                    $scope.comments.lastCommented = elementOb._modified;
+                    $scope.comments.lastCommentedBy = elementOb._modifier;
                 }
             }
-            if ($state.includes('workspace.site.document')) {
-                $scope.bbApi.addButton(UxService.getButtonBarButton('center.previous'));
-                $scope.bbApi.addButton(UxService.getButtonBarButton('center.next'));
-            }
+        },
+        elementClicked: function(elementOb) {
+            $rootScope.$broadcast('elementSelected', elementOb, 'latest');
         }
     };
-
-    // TODO: This code is duplicated in the FullDocCtrl
-    // **WARNING** IF YOU CHANGE THIS CODE, NEED TO UPDATE IN FULL DOC CTRL TOO
-    var getPDFStatus = function(){
-        if(!snapshot) return null;
-        var formats = snapshot.formats;
-        if(!formats || formats.length===0) return null;
-        for(var i=0; i < formats.length; i++){
-            if(formats[i].type=='pdf') {
-                var status = formats[i].status;
-                if(status == 'Generating') status = 'Generating...';
-                else if(status == 'Error') status = 'Regenerate PDF';
-                return status;
-            }
-        }
-        return null;
+    $scope.comments = {
+        count: 0,
+        lastCommented: '',
+        lastCommentedBy: '',
+        map: {}
     };
 
-    var getPDFUrl = function(){
-        if(!snapshot) return null;
-        var formats = snapshot.formats;
-        if(!formats || formats.length===0) return null;
-        for(var i=0; i < formats.length; i++){
-            if(formats[i].type=='pdf'){
-                return formats[i].url;
-            }
-        }
-        return null;
-    };
+    $scope.docLibLink = '';
+    if (groupOb !== null) {
+        $scope.docLibLink = groupOb._link;
+    } else if (documentOb !== null && documentOb._groupId !== undefined && documentOb._groupId !== null) {
+        $scope.docLibLink = '/share/page/repository#filter=path|/Sites/' + orgOb.id + '/documentLibrary/' +
+        projectOb.id + '/' + documentOb._groupId;
+    } else {
+        $scope.docLibLink = '/share/page/repository#filter=path|/Sites/' + orgOb.id + '/documentLibrary/' +
+        projectOb.id;
+    }
 
-    var getZipStatus = function(){
-        if(!snapshot) return null;
-        var formats = snapshot.formats;
-        if(!formats || formats.length===0) return null;
-        for(var i=0; i < formats.length; i++){
-            if(formats[i].type=='html') {
-                var status = formats[i].status;
-                if(status == 'Generating') status = 'Generating...';
-                else if(status == 'Error') status = 'Regenerate Zip';
-                return status;
-            }
-        }
-        return null;
-    };
-
-    var getZipUrl = function(){
-        if(angular.isUndefined(snapshot)) return null;
-        if(snapshot===null) return null;
-        
-        var formats = snapshot.formats;
-        if(formats===undefined || formats===null || formats.length===0) return null;
-        for(var i=0; i < formats.length; i++){
-            if(formats[i].type=='html'){
-                return formats[i].url;  
-            } 
-        }
-        return null;
-    };
-
-    $scope.$on('generate.pdf', function() {
-        if (getPDFStatus() === 'Generating...')
-            return;
-        $scope.bbApi.toggleButtonSpinner('generate.pdf');
-        $scope.bbApi.toggleButtonSpinner('generate.zip');
-
-        snapshot.formats.push({"type":"pdf",  "status":"Generating"});
-        snapshot.formats.push({"type":"html", "status":"Generating"});
-        ConfigService.createSnapshotArtifact(snapshot, site.sysmlid, workspace).then(
-            function(result){
-                growl.info('Generating artifacts...Please wait for a completion email and reload the page.');
-            },
-            function(reason){
-                growl.error('Failed to generate artifacts: ' + reason.message);
-            }
-        );
-    });
-
-    $scope.$on('generate.zip', function() {
-        $rootScope.$broadcast('generate.pdf');        
-    });
-
-    $scope.$on('download.pdf', function() {
-        $window.open(getPDFUrl());
-
-    });
-
-    $scope.$on('download.zip', function() {
-        $window.open(getZipUrl());
-    });
-
-    $scope.$on('edit.view.documentation', function() {
-        $scope.editing = !$scope.editing;
-        $scope.specApi.setEditing(true);
-        if ($scope.filterApi.setEditing)
-            $scope.filterApi.setEditing(true);
-        $scope.bbApi.setPermission('edit.view.documentation',false);
-        $scope.bbApi.setPermission('edit.view.documentation.save',true);
-        $scope.bbApi.setPermission('edit.view.documentation.cancel',true);
-        var edit = $scope.specApi.getEdits();
-        if (edit) {
-            $rootScope.veEdits['element|' + edit.sysmlid + '|' + ws] = edit;
-            $rootScope.mms_tbApi.setIcon('element.editor', 'fa-edit-asterisk');
-            if (Object.keys($rootScope.veEdits).length > 1) {
-                $rootScope.mms_tbApi.setPermission('element.editor.saveall', true);
-            } else {
-                $rootScope.mms_tbApi.setPermission('element.editor.saveall', false);
-            }
-        }
-        ElementService.isCacheOutdated(view.sysmlid, ws)
-        .then(function(data) {
-            if (data.status && data.server.modified > data.cache.modified)
-                growl.warning('This view has been updated on the server');
-        });
-    });
-
-    $scope.$on('edit.view.documentation.save', function() {
-        if (elementSaving) {
-            growl.info('Please Wait...');
-            return;
-        }
-        elementSaving = true;
-        var waitForFilter = false;
-        $scope.bbApi.toggleButtonSpinner('edit.view.documentation.save');
-        $scope.specApi.save().then(function(data) {
-            if ($scope.filterApi.getEditing && $scope.filterApi.getEditing()) {
-                waitForFilter = true;
-                $scope.filterApi.save().then(function(filter) {
-                    $state.reload();
-                }, function(reason) {
-                    growl.error("Filter save error: " + reason.message);
-                }).finally(function() {
-                    $scope.bbApi.setPermission('edit.view.documentation',true);
-                    $scope.bbApi.setPermission('edit.view.documentation.save',false);
-                    $scope.bbApi.setPermission('edit.view.documentation.cancel',false);
-                    $scope.bbApi.toggleButtonSpinner('edit.view.documentation.save');
+    $scope.bbApi = {
+        init: function() {
+            if (viewOb && viewOb._editable && refOb.type === 'Branch') {
+                $scope.bbApi.addButton(UxService.getButtonBarButton('show-edits'));
+                $scope.bbApi.setToggleState('show-edits', $rootScope.ve_editmode);
+                hotkeys.bindTo($scope)
+                .add({
+                    combo: 'alt+d',
+                    description: 'toggle edit mode',
+                    callback: function() {$scope.$broadcast('show-edits');}
                 });
             }
-            elementSaving = false;
-            growl.success('Save Successful');
-            $scope.editing = false;
-            delete $rootScope.veEdits['element|' + $scope.specApi.getEdits().sysmlid + '|' + ws];
-            if (Object.keys($rootScope.veEdits).length === 0) {
-                $rootScope.mms_tbApi.setIcon('element.editor', 'fa-edit');
-            }
-            if (Object.keys($rootScope.veEdits).length > 1) {
-                $rootScope.mms_tbApi.setPermission('element.editor.saveall', true); 
-            } else {
-                $rootScope.mms_tbApi.setPermission('element.editor.saveall', false);
-            }
-            if (!waitForFilter) {
-                $scope.bbApi.setPermission('edit.view.documentation',true);
-                $scope.bbApi.setPermission('edit.view.documentation.save',false);
-                $scope.bbApi.setPermission('edit.view.documentation.cancel',false);
-            }
-        }, function(reason) {
-            elementSaving = false;
-            if (reason.type === 'info')
-                growl.info(reason.message);
-            else if (reason.type === 'warning')
-                growl.warning(reason.message);
-            else if (reason.type === 'error')
-                growl.error(reason.message);
-        }).finally(function() {
-            if (!waitForFilter)
-                $scope.bbApi.toggleButtonSpinner('edit.view.documentation.save');
-        });
-    });
+            $scope.bbApi.addButton(UxService.getButtonBarButton('show-elements'));
+            $scope.bbApi.setToggleState('show-elements', $rootScope.veElementsOn);
+            $scope.bbApi.addButton(UxService.getButtonBarButton('show-comments'));
+            $scope.bbApi.setToggleState('show-comments', $rootScope.veCommentsOn);
 
-    $scope.$on('edit.view.documentation.cancel', function() {
-        var go = function() {
-            if ($scope.filterApi.cancel) {
-                $scope.filterApi.cancel();
-                $scope.filterApi.setEditing(false);
-            }
-            delete $rootScope.veEdits['element|' + $scope.specApi.getEdits().sysmlid + '|' + ws];
-            $scope.specApi.revertEdits();
-            $scope.editing = false;
-            if (Object.keys($rootScope.veEdits).length === 0) {
-                $rootScope.mms_tbApi.setIcon('element.editor', 'fa-edit');
-            }
-            if (Object.keys($rootScope.veEdits).length > 1) {
-                $rootScope.mms_tbApi.setPermission('element.editor.saveall', true);
-            } else {
-                $rootScope.mms_tbApi.setPermission('element.editor.saveall', false);
-            }
-            $scope.bbApi.setPermission('edit.view.documentation',true);
-            $scope.bbApi.setPermission('edit.view.documentation.save',false);
-            $scope.bbApi.setPermission('edit.view.documentation.cancel',false);
-        };
-        if ($scope.specApi.hasEdits()) {
-            var instance = $modal.open({
-                templateUrl: 'partials/mms/cancelConfirm.html',
-                scope: $scope,
-                controller: ['$scope', '$modalInstance', function($scope, $modalInstance) {
-                    $scope.ok = function() {
-                        $modalInstance.close('ok');
-                    };
-                    $scope.cancel = function() {
-                        $modalInstance.dismiss();
-                    };
-                }]
+            // Set hotkeys for toolbar
+            hotkeys.bindTo($scope)
+            .add({
+                combo: 'alt+c',
+                description: 'toggle show comments',
+                callback: function() {$scope.$broadcast('show-comments');}
+            }).add({
+                combo: 'alt+e',
+                description: 'toggle show elements',
+                callback: function() {$scope.$broadcast('show-elements');}
             });
-            instance.result.then(function() {
-                go();
-            });
-        } else
-            go();
-    });
 
-    $scope.$on('show.comments', function() {
+            if ($state.includes('project.ref.preview') || $state.includes('project.ref.document')) {
+                $scope.bbApi.addButton(UxService.getButtonBarButton('refresh-numbering'));
+                // $scope.bbApi.addButton(UxService.getButtonBarButton('share-url'));
+                $scope.bbApi.addButton(UxService.getButtonBarButton('print'));
+                if ($state.includes('project.ref.document')) {
+                    var exportButtons = UxService.getButtonBarButton('export');
+                    exportButtons.dropdown_buttons.push(UxService.getButtonBarButton("convert-pdf"));
+                    $scope.bbApi.addButton(exportButtons);
+                    $scope.bbApi.addButton(UxService.getButtonBarButton('center-previous'));
+                    $scope.bbApi.addButton(UxService.getButtonBarButton('center-next'));
+                    // Set hotkeys for toolbar
+                    hotkeys.bindTo($scope)
+                    .add({
+                        combo: 'alt+.',
+                        description: 'next',
+                        callback: function() {$scope.$broadcast('center-next');}
+                    }).add({
+                        combo: 'alt+,',
+                        description: 'previous',
+                        callback: function() {$scope.$broadcast('center-previous');}
+                    });
+                } else {
+                    $scope.bbApi.addButton(UxService.getButtonBarButton('export'));
+                }
+            }
+        }
+    };
+
+    $scope.$on('show-comments', function() {
         $scope.viewApi.toggleShowComments();
-        $scope.bbApi.toggleButtonState('show.comments');
+        $scope.bbApi.toggleButtonState('show-comments');
         $rootScope.veCommentsOn = !$rootScope.veCommentsOn;
     });
 
-    $scope.$on('show.elements', function() {
+    $scope.$on('show-elements', function() {
         $scope.viewApi.toggleShowElements();
-        $scope.bbApi.toggleButtonState('show.elements');
+        $scope.bbApi.toggleButtonState('show-elements');
         $rootScope.veElementsOn = !$rootScope.veElementsOn;
     });
 
-    $scope.$on('center.previous', function() {
-        var prev = $rootScope.mms_treeApi.get_prev_branch($rootScope.mms_treeApi.get_selected_branch());
+    $scope.$on('show-edits', function() {
+        if( ($rootScope.veElementsOn && $rootScope.ve_editmode) || (!$rootScope.veElementsOn && !$rootScope.ve_editmode) ){
+            $scope.viewApi.toggleShowElements();
+            $scope.bbApi.toggleButtonState('show-elements');
+            $rootScope.veElementsOn = !$rootScope.veElementsOn;
+        }
+        $scope.viewApi.toggleShowEdits();
+        $scope.bbApi.toggleButtonState('show-edits');
+        $rootScope.ve_editmode = !$rootScope.ve_editmode;
+    });
+
+    $scope.$on('center-previous', function() {
+        var prev = $rootScope.ve_treeApi.get_prev_branch($rootScope.ve_treeApi.get_selected_branch());
         if (!prev)
             return;
-        $scope.bbApi.toggleButtonSpinner('center.previous');
-        $rootScope.mms_treeApi.select_branch(prev);
+        while (prev.type !== 'view' && prev.type !== 'section') {
+            prev = $rootScope.ve_treeApi.get_prev_branch(prev);
+            if (!prev)
+                return;
+        }
+        $scope.bbApi.toggleButtonSpinner('center-previous');
+        $rootScope.ve_treeApi.select_branch(prev);
+        $scope.bbApi.toggleButtonSpinner('center-previous');
     });
 
-    $scope.$on('center.next', function() {
-        var next = $rootScope.mms_treeApi.get_next_branch($rootScope.mms_treeApi.get_selected_branch());
+    $scope.$on('center-next', function() {
+        var next = $rootScope.ve_treeApi.get_next_branch($rootScope.ve_treeApi.get_selected_branch());
         if (!next)
             return;
-        $scope.bbApi.toggleButtonSpinner('center.next');
-        $rootScope.mms_treeApi.select_branch(next);
+        while (next.type !== 'view' && next.type !== 'section') {
+            next = $rootScope.ve_treeApi.get_next_branch(next);
+            if (!next)
+                return;
+        }
+        $scope.bbApi.toggleButtonSpinner('center-next');
+        $rootScope.ve_treeApi.select_branch(next);
+        $scope.bbApi.toggleButtonSpinner('center-next');
     });
 
-    if (view) {
-        ViewService.setCurrentViewId(view.sysmlid);
-        $rootScope.veCurrentView = view.sysmlid;
-        $scope.vid = view.sysmlid;
-    } else {
-        $rootScope.veCurrentView = '';
-        $scope.vid = '';        
-    }
-    $scope.ws = ws;
-    $scope.version = time;
-    $scope.editing = false;
+    // Share URL button settings
+    $scope.dynamicPopover = ShortenUrlService.dynamicPopover;
+    $scope.copyToClipboard = ShortenUrlService.copyToClipboard;
+    $scope.handleShareURL = ShortenUrlService.getShortUrl.bind(null, $location.absUrl(), $scope);
 
-    if ($state.current.name === 'workspace' && !tag.id) {
-        $rootScope.$broadcast('elementSelected', ws, 'workspace');
-    } else if ($state.current.name === 'workspace' && tag.id) {
-        $rootScope.$broadcast('elementSelected', tag.id, 'tag');
-    }
-    if (view && $state.current.name !== 'workspace') {
+    if (viewOb && $state.includes('project.ref')) {
         $timeout(function() {
-            $rootScope.$broadcast('viewSelected', $scope.vid, viewElements);
-        }, 225);
+            $rootScope.$broadcast('viewSelected', viewOb, 'latest');
+        }, 1000);
     }
 
-    $scope.filterApi = {}; //for site doc filter
-    $scope.viewApi = {};
-    $scope.specApi = {};
-    $scope.comments = {};
-    $scope.numComments = 0;
-    $scope.lastCommented = "";
-    $scope.lastCommentedBy = "";
-    $scope.tscClicked = function(elementId) {
-        $rootScope.$broadcast('elementSelected', elementId, 'element');
-    };
-    $scope.elementTranscluded = function(element, type) {
-        if (type === 'Comment' && !$scope.comments.hasOwnProperty(element.sysmlid)) {
-            $scope.comments[element.sysmlid] = element;
-            $scope.numComments++;
-            if (element.modified > $scope.lastCommented) {
-                $scope.lastCommented = element.modified;
-                $scope.lastCommentedBy = element.creator;
-            }
+    $scope.searchOptions = {
+        emptyDocTxt: 'This field is empty.',
+        searchInput: search,
+        getProperties: true,
+        closeable: true,
+        callback: function(elementOb) {
+            $rootScope.$broadcast('elementSelected', elementOb, 'latest');
+            if ($rootScope.ve_togglePane && $rootScope.ve_togglePane.closed)
+                $rootScope.ve_togglePane.toggle();
+        },
+        relatedCallback: function (doc, view, elem) {//siteId, documentId, viewId) {
+            $state.go('project.ref.document.view', {projectId: doc._projectId, documentId: doc.id, viewId: view.id, refId: doc._refId, search: undefined});
         }
     };
-    $scope.viewApi.init = function() {
-        if ($rootScope.veCommentsOn) {
-            $scope.viewApi.toggleShowComments();
-        }
-        if ($rootScope.veElementsOn) {
-            $scope.viewApi.toggleShowElements();
-        }
-    };
+
+    $scope.$on('convert-pdf', function() {
+        if (isPageLoading())
+            return;
+        MmsAppUtils.printModal(viewOb, refOb, false, 3)
+        .then(function(ob) {
+            growl.info('Exporting as PDF file. Please wait for a completion email.',{ttl: -1});
+        }, function(reason){
+            growl.error("Exporting as PDF file Failed: " + reason.message);
+        });
+    });
+
+    $scope.$on('print', function() {
+        if (isPageLoading())
+            return;
+        MmsAppUtils.printModal(viewOb, refOb, false, 1);
+    });
+
+    $scope.$on('word', function() {
+        if (isPageLoading())
+            return;
+        MmsAppUtils.printModal(viewOb, refOb, false, 2)
+        .then(function(ob) {
+            growl.info('Exporting as Word file. Please wait for a completion email.',{ttl: -1});
+        }, function(reason){
+            growl.error("Exporting as Word file Failed: " + reason.message);
+        });
+    });
+
+    $scope.$on('tabletocsv', function() {
+        if (isPageLoading())
+            return;
+        MmsAppUtils.tableToCsv(false);
+    });
+
+    $scope.$on('refresh-numbering', function() {
+        if (isPageLoading())
+            return;
+        var printElementCopy = angular.element("#print-div");
+        MmsAppUtils.refreshNumbering($rootScope.ve_treeApi.get_rows(), printElementCopy);
+    });
 }]);

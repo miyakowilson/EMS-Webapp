@@ -12,7 +12,6 @@ angular.module('mms')
  * Provides cache of key value pairs. Key can be a string or an array of strings.
  */
 function CacheService(_) {
-    
     var cache = {};
 
     /**
@@ -28,11 +27,46 @@ function CacheService(_) {
      */
     var get = function(key) {
         var realkey = key;
-        if (angular.isArray(key))
+        if (angular.isArray(key)) {
             realkey = makeKey(key);
-        if (cache.hasOwnProperty(realkey))
-            return cache[realkey];
+        }
+        if (cache.hasOwnProperty(realkey)) {
+            var realval = cache[realkey];
+            if (angular.isString(realval)) {
+                return get(realval);
+            }
+            return realval;
+        }
         return null;
+    };
+
+    /**
+     * @ngdoc method
+     * @name mms.CacheService#getElements
+     * @methodOf mms.CacheService
+     * 
+     * @description
+     * Get the latest elements in the cache with the parameter workspace ID
+     * 
+     * @param {string} projectId The mms project id
+     * @param {string} refId The branch/tag id
+     * @returns {Object} Value if found, null if not found
+     */
+    var getLatestElements = function(projectId, refId) {
+        var latestElements = [];
+        for (var key in cache) {
+            if (!cache.hasOwnProperty(key)) {
+                continue;
+            }
+            if (key.indexOf('|latest') >= 0 && key.indexOf('element|') >= 0 && key.indexOf('|edit') < 0 && 
+                    key.indexOf('deleted') < 0 && key.indexOf(refId) >= 0 && key.indexOf(projectId) >= 0) {
+                var val = get(key);
+                if (val) {
+                    latestElements.push(val);
+                }
+            }
+        }
+        return latestElements;
     };
 
     /**
@@ -46,27 +80,43 @@ function CacheService(_) {
      * @param {Array.<string>|string} key String key or Array of hierarchical keys
      * @param {Object} value The value to save
      * @param {boolean} [merge=false] Whether to replace the value or do a merge if value already exists
-     * @param {function} [func=null] Optional function that take in value and key based on iteration of the original value
-     *      and returns an object with the same signature as arguments to the put function. For example, 
-     *      {key: ['key'], value: 'value', merge: false, func: null}
      * @returns {Object} the original value
      */
-    var put = function(key, value, merge, func) {
+    var put = function(key, value, merge) {
         var m = !merge ? false : merge;
         var realkey = key;
-        if (angular.isArray(key))
+        if (angular.isArray(key)) {
             realkey = makeKey(key);
-        if (cache.hasOwnProperty(realkey) && m)
-            _.merge(cache[realkey], value);
-        else
-            cache[realkey] = value;
-        if (func) {
-            angular.forEach(value, function(v, k) {
-                var ob = func(v, k);
-                put(ob.key, ob.value, ob.merge, ob.func);
-            });
         }
-        return cache[realkey];
+        var val = get(realkey);
+        if (val && m && angular.isObject(value)) {
+            _.merge(val, value, function(a,b,id) {
+                if ((id === '_contents' || id === 'specification') && b && b.type === 'Expression') {
+                    return b;
+                }
+                if (angular.isArray(a) && angular.isArray(b) && b.length < a.length) {
+                    a.length = 0;
+                    Array.prototype.push.apply(a, b);
+                    return a; 
+                }
+                if (id === '_displayedElementIds' && b) {
+                    return b;
+                }
+                return undefined;
+            });
+        } else {
+            if (!angular.isString(val) || angular.isString(value)) {
+                cache[realkey] = value;
+            } else {
+                realkey = val;
+                while (angular.isString(cache[realkey])) {
+                    realkey = cache[realkey];
+                }
+                cache[realkey] = value;
+            }
+            val = value;
+        }
+        return val;
     };
 
     /**
@@ -82,12 +132,16 @@ function CacheService(_) {
      */
     var remove = function(key) {
         var realkey = key;
-        if (angular.isArray(key))
+        if (angular.isArray(key)) {
             realkey = makeKey(key);
-        var result = null;
-        if (cache.hasOwnProperty(realkey)) {
-            result = cache[realkey];
-            delete cache[realkey];
+        }
+        if (!cache.hasOwnProperty(realkey)) {
+            return null;
+        }
+        var result = cache[realkey];
+        delete cache[realkey];
+        if (angular.isString(result)) {
+            return remove(result);
         }
         return result;
     };
@@ -105,20 +159,44 @@ function CacheService(_) {
      */
     var exists = function(key) {
         var realkey = key;
-        if (angular.isArray(key))
+        if (angular.isArray(key)) {
             realkey = makeKey(key);
-        return cache.hasOwnProperty(realkey);
+        }
+        if (!cache.hasOwnProperty(realkey)) {
+            return false;
+        }
+        var val = cache[realkey];
+        if (angular.isObject(val)) {
+            return true;
+        }
+        if (angular.isString(val)) {
+            return exists(val);
+        }
+        return false;
     };
 
     var makeKey = function(keys) {
         return keys.join('|');
     };
 
+    var getCache = function() {
+        return cache;
+    };
+
+    var reset = function() {
+        var keys = Object.keys(cache);
+        for (var i = 0; i < keys.length; i++) {
+            delete cache[keys[i]];
+        }
+    };
+
     return {
         get: get,
+        getLatestElements: getLatestElements,
         put: put,
         exists: exists,
         remove: remove,
+        getCache: getCache,
+        reset: reset
     };
-
 }

@@ -1,88 +1,62 @@
 <div class="modal-header">
-
-    <h4>INSERT A CROSS REFERENCE</h4>
-
-    <div class="transclude-modal-instructions">
-        Search for an element and click on a cell in the table to insert a cross reference.
+    <h4>{{title}}</h4>
+</div>
+<div class="modal-body">
+    <div class="ve-light-tabs modal-top-tabs" ng-show="showProposeLink">
+        <ul class="nav nav-tabs">
+            <li class="uib-tab nav-item tab-item" ng-class="{'active': !searchExisting}">
+                <a class="nav-link" ng-click="searchExisting = false"><i class="fa fa-plus"></i>Create New</a>
+            </li>
+            <li class="uib-tab nav-item tab-item" ng-class="{'active': searchExisting}">
+                <a class="nav-link" ng-click="searchExisting = true"><i class="fa fa-search"></i>Search for existing</a>
+            </li>
+        </ul>
     </div>
 
-</div>
+    <!-- Seach for exisiting panel -->
+    <div ng-show="searchExisting">
+        <div class="transclude-modal-instructions">
+            {{description}}
+        </div>
+        <div class="form-group" ng-show="!showProposeLink"><br>
+            <label>Link Text:</label>
+            <div class="radio radio-with-label">
+                <label><input type="radio" ng-model="linkType" ng-value="1">&nbsp;Document auto-numbering
+                <a uib-tooltip="For links within current document, otherwise defaults to name" tooltip-trigger="mouseenter" tooltip-popup-delay="100"><i class="fa fa-info-circle"></i></a></label><br>
+                <label><input type="radio" ng-model="linkType" ng-value="2">&nbsp;Name</label><br>
+                <label><input type="radio" ng-model="linkType" ng-value="3">&nbsp;Custom&nbsp;
+                    <input type="text" ng-model="linkText" placeholder="custom title"/></label>
+            </div>
+        </div>
+        <label ng-show="showEditableOp" for="nonEditableCheckbox">
+            <input id="nonEditableCheckbox" type="checkbox" ng-model="nonEditableCheckbox">&nbsp;Restrict editing
+        </label>
 
-<div class="modal-body transclude-modal">
+        <mms-search mms-options="searchOptions" mms-project-id="{{mmsProjectId}}" mms-ref-id="{{mmsRefId}}"></mms-search>
+    </div>
 
-    <div class="transclude-modal-input">
-
-        <form ng-submit="search(searchText)">
-            <div class="form-search input-group">
-                <input class="form-control" type="text" ng-model="searchText" placeholder="Search for an element" />
-                <span class="input-group-btn">                
-                    <button class="btn btn-primary" type="button" ng-click="search(searchText)">
-                    <span class="btn-text">GO</span> <i class="{{searchClass}}"></i></button>
-                </span>
+    <!-- Create New Panel -->
+    <div ng-show="!searchExisting">
+        <form>
+            <div class="form-group">
+                <label>Name </label><span class="star-mandatory">*</span>
+                <input class="form-control" type="text" ng-model="newE.name" placeholder="Name your new element" autofocus/>
+            </div>
+            <div class="form-group">
+                <label class="label-documentation">Documentation</label>
+                <textarea mms-ckeditor ng-model="newE.documentation" mms-project-id="{{mmsProjectId}}" mms-ref-id="{{mmsRefId}}" class="textarea-transclude-modal"></textarea>
+            </div>
+            <label>Property to cross-reference</label><span class="star-mandatory">*</span>
+            <div class="radio radio-with-label">
+                <label><input type="radio" name="optradio" value="true" ng-click="toggleRadio('name')">Name</label><br>
+                <label><input type="radio" name="optradio" value="true" ng-click="toggleRadio('documentation')">Documentation</label>
             </div>
         </form>
 
-        <button ng-click="showOriginalElements()" class="show-orig-table-btn btn btn-primary">SHOW ORIGINAL TABLE</button>
-
-        <div class="misc-form-field">
-
-            <div class="form-filter" ng-show="mmsCfElements">
-                <input class="form-control" type="text" ng-model="filter" placeholder="Type here to filter elements in the table" />
-            </div>
-
-            <form>
-                <div class="form-propose input-group">
-                    <input class="form-control" type="text" ng-model="newE.name" placeholder="Propose a new element" />
-                    <span class="input-group-btn">
-                        <button class="btn btn-primary" type="button" ng-click="makeNew()"><span class="btn-text">SUBMIT</span> <i class="{{proposeClass}}"></i></button>
-                    </span>
-                </div>
-                <textarea mms-tinymce ng-model="newE.documentation" mms-ws="{{mmsWs}}" mms-site="{{mmsSite}}"></textarea>
-            </form>
-
-        </div>
-
+        <p class="help-block pull-left"><i>Fields marked with <span class="star-mandatory">*</span> are required</i></p>
     </div>
-
-    <div class="container-fluid transclude-table">
-        <table class="table table-bordered">
-
-            <tr>
-                <th>NAME</th>
-                <th>QUALIFIED NAME</th>
-                <th>METATYPE</th>
-                <th>DOC</th>
-                <th>VALUE (if applicable)</th>
-            </tr>
-
-            <tr ng-repeat="elem in mmsCfElements | filter:filter">
-                <td ng-click="choose(elem.sysmlid, 'name', elem.name)" class="clickable">
-                    {{elem.name}}
-                </td>
-                <td>
-                    {{elem.qualifiedName}}
-                </td>
-                <td>
-                    {{elem.specialization.type || 'Element'}}
-                </td>
-                <td ng-click="choose(elem.sysmlid, 'doc', elem.name)" class="clickable">
-                    {{elem.documentation | limitTo:20}}
-                </td>
-                <td ng-click="choose(elem.sysmlid, 'val', elem.name)" class="clickable">
-                    <span ng-repeat="val in elem.specialization.value">
-                        {{val.integer || val.double || val.boolean + '' || val.string}}
-                    </span>
-                    <span>{{elem.specialization.specification}}</span>
-                </td>
-            </tr>
-
-        </table>
-    </div>
-
 </div>
-
 <div class="modal-footer">
-    <span class="input-group-btn">
-        
-    </span><button class="btn btn-danger" ng-click="cancel()">CANCEL</button>
+    <button class="btn btn-primary" ng-show="!searchExisting" type="button" ng-click="makeNewAndChoose()">Create & Cross Reference<i class="{{proposeClass}}"></i></button>
+    <button class="btn btn-default" ng-click="cancel()">Cancel</button>
 </div>

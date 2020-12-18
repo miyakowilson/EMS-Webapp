@@ -24,7 +24,6 @@
  * * [jQueryUI](http://jqueryui.com/)
  * * [bootstrap](http://getbootstrap.com/) (for styling and css)
  * * [angular-growl](https://github.com/JanStevens/angular-growl-2)
- * * [redactor](http://imperavi.com/redactor/) (we have redactor oem license)
  * * [font awesome](http://fortawesome.github.io/Font-Awesome/)
  *
  * ## Example app that uses this module
@@ -41,7 +40,6 @@
             <link rel="stylesheet" href="mms.css"/> <!-- mms directives css stylings -->
             <link rel="stylesheet" href="font-awesome.css"/>
             <link rel="stylesheet" href="angular-growl.css"/>
-            <link rel="stylesheet" href="redactor.css"/> 
         </head>
         <body>
             <div growl></div> <!-- for notifications -->
@@ -58,10 +56,6 @@
         <script src="ui-bootstrap-tpls.js"></script>
         <script src="angular-growl.js"></script>
 
-        <!-- redactor -->
-        <script src="redactor.js"></script>
-        <script src="fontcolor.js"></script> <!-- redactor plugin -->
-
         <!-- mms -->
         <script src="mms.js"></script>
         <script src="mms.directives.tpls.js"></script>
@@ -77,12 +71,22 @@
     angular.module('exampleApp', ['mms', 'mms.directives']);
     </pre>
  */
-angular.module('mms.directives', ['mms', 'mms.directives.tpls', 'ui.bootstrap', 'ui.sortable', 'angular-growl'])
-.config(['$sceProvider', 'growlProvider', function($sceProvider, growlProvider) {
+angular.module('mms.directives', ['mms', 'mms.directives.tpls', 'ui.bootstrap', 'angular-growl', 'angularjs-dropdown-multiselect', 'ui.tree-filter'])
+.config(['$sceProvider', 'growlProvider', 'uiTreeFilterSettingsProvider', function($sceProvider, growlProvider, uiTreeFilterSettingsProvider) {
     $sceProvider.enabled(false);
     growlProvider.onlyUniqueMessages(false);
     growlProvider.globalTimeToLive({success: 5000, error: -1, warning: 5000, info: 5000});
     growlProvider.globalPosition('bottom-right');
+    uiTreeFilterSettingsProvider.addresses = ['label'];
+    uiTreeFilterSettingsProvider.descendantCollection = 'children';
 }])
-.constant('go', window.go)
-.constant('tinymce', window.tinymce);
+.filter('veRealNum', function() {
+    return function(n) {
+        if (Number.isInteger(n)) {
+            return n + '.0';
+        }
+        return n;
+    };
+})
+.constant('CKEDITOR', window.CKEDITOR)
+.constant('MathJax', window.MathJax);

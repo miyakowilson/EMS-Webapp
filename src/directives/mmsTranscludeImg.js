@@ -1,66 +1,102 @@
 'use strict';
 
 angular.module('mms.directives')
-.directive('mmsTranscludeImg', ['VizService', 'growl', mmsTranscludeImg]);
+.directive('mmsTranscludeImg', ['ArtifactService','AuthService','ElementService','URLService','growl', mmsTranscludeImg]);
 
 /**
  * @ngdoc directive
  * @name mms.directives.directive:mmsTranscludeImg
  *
- * @requires mms.VizService
+ * @requires mms.ArtifactService
+ * @requires mms.AuthService
+ * @requires mms.ElementService
+ * @requires mms.URLService
+ * @requires growl
  *
  * @restrict E
  *
  * @description
  * Given an image id, puts in an img tag for the image url. 
  *
- * @param {string} mmsEid The id of the image to show
- * @param {string=master} mmsWs Workspace to use, defaults to master
- * @param {string=latest} mmsVersion Version can be alfresco version number or timestamp, default is latest
+ * @param {string} mmsElementId The id of the view
+ * @param {string} mmsProjectId The project id for the view
+ * @param {string=master} mmsRefId Reference to use, defaults to master
+ * @param {string=latest} mmsCommitId Commit ID, default is latest
  */
-function mmsTranscludeImg(VizService, growl) {
+function mmsTranscludeImg(ArtifactService, AuthService, ElementService, URLService, growl) {
 
-    var mmsTranscludeImgLink = function(scope, element, attrs, mmsViewCtrl) {
+    var mmsTranscludeImgLink = function(scope, element, attrs, controllers) {
+        var mmsViewCtrl = controllers[0];
         var processed = false;
         element.click(function(e) {
             if (!mmsViewCtrl)
                 return false;
-            mmsViewCtrl.transcludeClicked(scope.mmsEid);
+            //TODO get element somehow
+            mmsViewCtrl.transcludeClicked(scope.element);
             return false;
         });
 
-        scope.$watch('mmsEid', function(newVal, oldVal) {
-            if (!newVal || (newVal === oldVal && processed))
+        var changeElement = function(newVal, oldVal) {
+            if (!newVal || (newVal === oldVal && processed) || !scope.mmsProjectId) {
                 return;
-            processed = true;
-            var ws = scope.mmsWs;
-            var version = scope.mmsVersion;
-            if (mmsViewCtrl) {
-                var viewVersion = mmsViewCtrl.getWsAndVersion();
-                if (!ws)
-                    ws = viewVersion.workspace;
-                if (!version)
-                    version = viewVersion.version;
             }
-            VizService.getImageURL(scope.mmsEid, false, ws, version)
+            processed = true;
+            scope.projectId = scope.mmsProjectId;
+            scope.refId = scope.mmsRefId ? scope.mmsRefId : 'master';
+            scope.commitId = scope.mmsCommitId ? scope.mmsCommitId : 'latest';
+            var reqOb = {elementId: scope.mmsElementId, projectId: scope.projectId, refId: scope.refId, commitId: scope.commitId};
+
+            var server = URLService.getMmsServer();
+            var ticket = '?alf_ticket=' + AuthService.getTicket();
+            element.addClass('isLoading');
+            ElementService.getElement(reqOb, 1, false)
             .then(function(data) {
-                scope.imgUrl = data;
+                scope.element = data;
+                var artifactOb = {
+                    projectId: data._projectId,
+                    refId: data._refId,
+                    artifactIds : data._artifactIds,
+                    commitId: scope.commitId === 'latest' ? 'latest' : data._commitId
+                };
+
+                // Get the artifacts of the element
+                ArtifactService.getArtifacts(artifactOb)
+                .then(function(artifacts) {
+                    scope.artifacts = artifacts;
+                    for(var i = 0; i < artifacts.length; i++) {
+                        var artifact = artifacts[i];
+                        if (artifact.contentType == "image/svg+xml") {
+                            scope.svgImgUrl = server + '/alfresco' + artifact.artifactLocation + ticket;
+                        } else if (artifact.contentType == "image/png") {
+                            scope.pngImgUrl = server + '/alfresco' + artifact.artifactLocation + ticket;
+                        }
+                    }
+                }, function(reason) {
+                    console.log('Artifacts Error: ' + reason.message + ': ' + scope.mmsElementId);
+                });
             }, function(reason) {
-                growl.error('Cf Image Error: ' + reason.message + ': ' + scope.mmsEid);
+                console.log('Cf Artifacts Error: ' + reason.message + ': ' + scope.mmsElementId);
+            }).finally(function() {
+                element.removeClass('isLoading');
             });
-        });
+        };
+
+        scope.$watch('mmsElementId', changeElement);
+        scope.$watch('mmsRefId', changeElement);
+        scope.$watch('mmsCommitId', changeElement);
     };
 
     return {
         restrict: 'E',
-        template: '<img ng-src="{{imgUrl}}"></img>',
+        template: '<img class="mms-svg" ng-src="{{svgImgUrl}}"></img><img class="mms-png" ng-src="{{pngImgUrl}}"></img>',
         scope: {
-            mmsEid: '@',
-            mmsVersion: '@',
-            mmsWs: '@'
+            mmsElementId: '@',
+            mmsProjectId: '@',
+            mmsRefId: '@',
+            mmsCommitId: '@',
+            mmsCfLabel: '@'
         },
-        require: '?^mmsView',
-        //controller: ['$scope', controller]
+        require: ['?^^mmsView'],
         link: mmsTranscludeImgLink
     };
 }

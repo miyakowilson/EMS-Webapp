@@ -1,23 +1,23 @@
 'use strict';
 
 angular.module('mms.directives')
-.directive('mmsViewList', ['$compile', '$templateCache', mmsViewList]);
+.directive('mmsViewList', ['$compile', 'UtilsService', 'Utils', mmsViewList]);
 
-function mmsViewList($compile, $templateCache) {
-    var template = $templateCache.get('mms/templates/mmsViewList.html');
-    
+function mmsViewList($compile, UtilsService, Utils) {
+
     return {
         restrict: 'E',
-        //template: template,
         scope: {
-            list: '=mmsList',
+            list: '<mmsList'
         },
-        //controller: ['$scope', controller]
         link: function(scope, element, attrs) {
-            element.append(template);
-            $compile(element.contents())(scope); 
-            //var el = $compile(template)(scope);
-            //element.append(el);
+            var html = UtilsService.makeHtmlList(scope.list);
+            element[0].innerHTML = html;
+            $(element[0]).find('img').each(function(index) {
+                Utils.fixImgSrc($(this));
+            });
+            $compile(element.contents())(scope);
+            return;
         }
     };
 }

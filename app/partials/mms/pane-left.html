@@ -1,32 +1,38 @@
-  <div class="pane-left">
-
-  <div class="pane-left-toolbar-wrap">
-    <div class="toolbar pane-left-btn-group">
-      <mms-button-bar buttons="buttons" mms-bb-api="bbApi"></mms-button-bar>
+<div fa-pane pane-anchor="north" pane-size="78px" pane-no-toggle="true" pane-no-scroll="true">
+    <div class="pane-left">
+        <div class="pane-left-toolbar" role="toolbar">
+            <mms-button-bar buttons="buttons" mms-bb-api="bbApi"></mms-button-bar>
+        </div>
+        <div class="tree-options">
+            <mms-button-bar buttons="treeButtons" mms-bb-api="tbApi"></mms-button-bar>
+            <input class="ve-plain-input" ng-model-optoins="{debounce: 1000}"
+                ng-model="treeOptions.search" type="text" placeholder="{{filterInputPlaceholder}}"
+                ng-change="searchInputChangeHandler();" style="flex:2">
+        </div>
     </div>
-  </div>
+</div>
+<div fa-pane pane-anchor="center" pane-no-toggle="true">
+    <div class="pane-left" style="display:table;">
+        <mms-tree ng-show="'showTree'==(activeMenu)" tree-data="treeData"
+                tree-control="treeApi" initial-selection="{{ve_treeInitial}}" options="treeOptions"></mms-tree>
 
-  </div>
+        <div data-ng-repeat="view in ::treeViewModes" ng-show="view.id==(activeMenu)">
+            <h4 style="margin: 3px 0px 3px 10px;">List of {{view.title}}</h4>
+            <ul class="nav nav-list nav-pills nav-stacked abn-tree">
+                <li ng-repeat="row in view.branchList | filter:treeOptions.search track by $index"
+                    class="abn-tree-row">
+                    <div class="arrow" ng-click="user_clicks_branch(row)"
+                        ng-class="{'active-text': row.branch.selected}" id="tree-branch-{{view.id}}-{{row.data.id}}">
+                        <a class="tree-item" style="padding-left: 20px; position:relative;">
+                            <i ng-class="{'active-text': row.branch.selected}"
+                            class="indented tree-icon fa {{view.icon}}"></i>
+                            <!-- TODO active branch -->
+                            <span class="indented tree-label" ng-class="{'active-text': row.branch.selected}">{{row.data._veNumber}} {{row.data.name}}</span>
+                        </a>
+                    </div>
+                </li>
+            </ul>
+        </div>
 
-  <div>
-
-    <input class="input-filter-tree form-control" ng-show="bbApi.getToggleState('tree.filter')" ng-model="search" type="text" placeholder="Type here to filter items in the tree" ng-change="treeApi.expand_all()">
-
-  </div>
-
-  <div ng-show="mergeOn">
-    <div>From: <span ng-if="mergeFrom.type == 'configuration'">Tag {{mergeFrom.data.name}}</span>
-              <span ng-if="mergeFrom.type == 'workspace'">Task {{mergeFrom.data.name}}</span>
-              <a tooltip="Change to selected" tooltip-append-to-body="true" tooltip-trigger="mouseenter" tooltip-popup-delay="400" ng-click="pickNew('from', treeApi.get_selected_branch())"><i class="fa fa-pencil"></i></a>
     </div>
-    <div>To: <span ng-if="mergeTo.type == 'configuration'">Tag {{mergeTo.data.name}}</span>
-            <span ng-if="mergeTo.type == 'workspace'">Task {{mergeTo.data.name}}</span>
-            <a tooltip="Change to selected" tooltip-append-to-body="true" tooltip-trigger="mouseenter" tooltip-popup-delay="400" ng-click="pickNew('to', treeApi.get_selected_branch())"><i class="fa fa-pencil"></i></a>
-    </div>
- 
-	 <a class="btn btn-success btn-xs" ng-click="compare()">COMPARE <i ng-show="comparing" class="fa fa-spin fa-spinner"></i></a>
-  </div>
-
- <mms-tree search="search" tree-data="my_data" section-numbering="treeSectionNumbering" tree-control="treeApi" on-select="my_tree_handler(branch)" initial-selection="{{mms_treeInitial}}" options="tree_options"></mms-tree>
-
 </div>

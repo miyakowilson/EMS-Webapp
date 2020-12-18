@@ -1,7 +1,7 @@
 'use strict';
 
 angular.module('mms')
-.factory('ElementService', ['$q', '$http', 'URLService', 'UtilsService', 'CacheService', '_', ElementService]);
+.factory('ElementService', ['$q', '$http', 'URLService', 'UtilsService', 'CacheService', 'HttpService', 'ApplicationService', '_', ElementService]);
 
 /**
  * @ngdoc service
@@ -11,23 +11,21 @@ angular.module('mms')
  * @requires mms.URLService
  * @requires mms.UtilsService
  * @requires mms.CacheService
- * @requires _
+ * @requires mms.HttpService
  * 
  * @description
  * An element CRUD service with additional convenience methods for managing edits.
- *
- * For element json example, see [here](https://ems.jpl.nasa.gov/alfresco/mms/raml/index.html)
  */
-function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
-    
-    var inProgress = {};
+function ElementService($q, $http, URLService, UtilsService, CacheService, HttpService, ApplicationService, _) {
+
+    var inProgress = {};// leave for now
     /**
      * @ngdoc method
      * @name mms.ElementService#getElement
      * @methodOf mms.ElementService
      * 
      * @description
-     * Gets an element object by id. If the element object is already in the cache,
+     * Gets an element object by projectId and elementId. If the element object is already in the cache,
      * resolve the existing reference, if not or update is true, request it from server, 
      * add/merge into the cache. 
      * 
@@ -37,7 +35,7 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      *
      * ## Example Usage
      *  <pre>
-        ElementService.getElement('element_id').then(
+        ElementService.getElement({projectId: 'projectId', elementId: 'element_id'}).then(
             function(element) { //element is an element object (see json schema)
                 alert('got ' + element.name);
             }, 
@@ -47,9 +45,15 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
             }
         );
         </pre>
-     * ## Example with timestamp
+     * ## Example with commitId
      *  <pre>
-        ElementService.getElement('element_id', false, 'master', '2014-07-01T08:57:36.915-0700').then(
+        ElementService.getElement({
+            projectId: 'projectId', 
+            elementId: 'elementId', 
+            refId: 'refId',         //default 'master'
+            commitId: 'commitId',   //default 'latest'
+            extended: true          //default false (extended includes _qualifiedName, _qualifiedId, _childViews)
+        }).then(
             function(element) { //element is an element object (see json schema)
                 alert('got ' + element.name);
             }, 
@@ -60,42 +64,58 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
         );
         </pre>
      * 
-     * @param {string} id The id of the element to get.
+     * @param {object} reqOb object with keys as described in function description.
+     * @param {integer} [weight=1] priority of request (2 is immediate, 1 is normal, 0 is low)
      * @param {boolean} [update=false] (optional) whether to always get the latest 
      *      from server, even if it's already in cache (this will update the cache if exists)
-     * @param {string} [workspace=master] (optional) workspace to use
-     * @param {string} [version=latest] (optional) alfresco version number or timestamp
      * @returns {Promise} The promise will be resolved with the element object, 
      *      multiple calls to this method with the same parameters would give the
      *      same object
      */
-    var getElement = function(id, update, workspace, version) {
-        var n = normalize(id, update, workspace, version);
-        var key = 'getElement(' + id + n.update + n.ws + n.ver + ')';
-
-        if (inProgress.hasOwnProperty(key))
+    var getElement = function(reqOb, weight, update) {
+        UtilsService.normalize(reqOb);
+        var requestCacheKey = getElementKey(reqOb);
+        var url = URLService.getElementURL(reqOb);
+        var key = url;
+        // if it's in the inProgress queue get it immediately
+        if (inProgress.hasOwnProperty(key)) { //change to change proirity if it's already in the queue
+            HttpService.ping(key, weight);
             return inProgress[key];
-
+        }
         var deferred = $q.defer();
-        if (CacheService.exists(n.cacheKey) && !n.update) {
-            var cached = CacheService.get(n.cacheKey);
-            if ((cached.specialization.type === 'View' ||
-                cached.specialization.type === 'Product') &&
-                !cached.specialization.hasOwnProperty('contains')) {
-            } else {
-                deferred.resolve(cached);
-                return deferred.promise;
-            }
+        var cached = CacheService.get(requestCacheKey);
+        if (cached && !update && (!reqOb.extended || (reqOb.extended && cached._qualifiedId))) {
+            deferred.resolve(cached);
+            return deferred.promise;
+        }
+        var deletedRequestCacheKey = getElementKey(reqOb);
+        deletedRequestCacheKey.push('deleted');
+        var deleted = CacheService.get(deletedRequestCacheKey);
+        if (deleted) {
+            deferred.reject({status: 410, data: {recentVersionOfElement: deleted}, message: 'Deleted'});
+            return deferred.promise;
         }
         inProgress[key] = deferred.promise;
-        $http.get(URLService.getElementURL(id, n.ws, n.ver))
-        .success(function(data, status, headers, config) {
-            deferred.resolve(CacheService.put(n.cacheKey, UtilsService.cleanElement(data.elements[0]), true));
-            delete inProgress[key];
-        }).error(function(data, status, headers, config) {
-            URLService.handleHttpStatus(data, status, headers, config, deferred);
-            delete inProgress[key];
-        });
+
+        HttpService.get(url,
+            function(data, status, headers, config) {
+                if (angular.isArray(data.elements) && data.elements.length > 0) {
+                    deferred.resolve(cacheElement(reqOb, data.elements[0]));
+                } else {
+                    deferred.reject({status: 500, data: '', message: "Server Error: empty response"}); //TODO 
+                }
+                delete inProgress[key];
+            },
+            function(data, status, headers, config) {
+                if (data.deleted && data.deleted.length > 0 && data.deleted[0].id === reqOb.elementId) {
+                    data.recentVersionOfElement = data.deleted[0];
+                    cacheDeletedElement(reqOb, data.deleted[0]);
+                }
+                URLService.handleHttpStatus(data, status, headers, config, deferred);
+                delete inProgress[key];
+            },
+            weight
+        );
         return deferred.promise;
     };
 
@@ -107,20 +127,99 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * @description
      * Same as getElement, but for multiple ids.
      * 
-     * @param {Array.<string>} ids The ids of the elements to get.
-     * @param {boolean} [update=false] (optional) whether to always get latest from server.
-     * @param {string} [workspace=master] (optional) workspace to use
-     * @param {string} [version=latest] (optional) alfresco version number or timestamp
+     * @param {object} reqOb keys - {projectId, refId, elementIds (array of ids), commitId, extended}
+     * @param {integer} [weight=1] priority of request (2 is immediate, 1 is normal, 0 is low)
+     * @param {boolean} [update=false] (optional) whether to always get the latest 
+     *      from server, even if it's already in cache (this will update the cache if exists)
      * @returns {Promise} The promise will be resolved with an array of element objects, 
-     *      multiple calls to this method with the same ids would result in an array of 
-     *      references to the same objects.
+     *      multiple calls to this method with the same parameters would give the
+     *      same objects
      */
-    var getElements = function(ids, update, workspace, version) {
-        var promises = [];
-        ids.forEach(function(id) {
-            promises.push(getElement(id, update, workspace, version));
+    var getElements = function(reqOb, weight, update) {
+        var deferred = $q.defer();
+        var request = {elements: []};
+        var existing = [];
+        UtilsService.normalize(reqOb);
+        for (var i = 0; i < reqOb.elementIds.length; i++) {
+            var id = reqOb.elementIds[i];
+            var requestCacheKey = getElementKey(reqOb, id);
+            var exist = CacheService.get(requestCacheKey);
+            if (exist && !update && (!reqOb.extended || (reqOb.extended && exist._qualifiedId))) {
+                existing.push(exist);
+                continue;
+            }
+            request.elements.push({id: id});
+        }
+        if (request.elements.length === 0) {
+            deferred.resolve(existing);
+            return deferred.promise;
+        }
+        $http.put(URLService.getPutElementsURL(reqOb), request)
+        .then(function(response) {
+            var data = response.data.elements;
+            var i;
+            if (data && data.length > 0) {
+                for (i = 0; i < data.length; i++) {
+                    existing.push(cacheElement(reqOb, data[i]));
+                }
+            }
+            var deleted = response.data.deleted;
+            if (deleted && deleted.length > 0) {
+                for (i = 0; i < deleted.length; i++) {
+                    cacheDeletedElement(reqOb, deleted[i]);
+                }
+            }
+            deferred.resolve(existing);
+        }, function(response) {
+            URLService.handleHttpStatus(response.data, response.status, response.headers, response.config, deferred);
         });
-        return $q.all(promises);
+        return deferred.promise;
+    };
+
+    /**
+     * @ngdoc method
+     * @name mms.ElementService#cacheElement
+     * @methodOf mms.ElementService
+     * 
+     * @description
+     * handles caching of element objects - in case the metadata of reqOb is different
+     * from the element's canonical projectId/refId/commitId (due to being requested 
+     * from a different project context), it'll become an alias
+     * 
+     * @param {object} reqOb request keys - {projectId, refId, elementId, commitId, extended}
+     * @param {object} elementOb object to cache
+     * @param {boolean} [edit=false] whether object to cache is for editing
+     * @returns {object} cached object
+     */
+    var cacheElement = function(reqOb, elementOb, edit) {
+        var result = UtilsService.cleanElement(elementOb, edit);
+        var requestCacheKey = getElementKey(reqOb, result.id, edit);
+        var origResultCommit = result._commitId;
+        if (reqOb.commitId === 'latest') {
+            var resultCommitCopy = JSON.parse(JSON.stringify(result));
+            result._commitId = 'latest'; //so realCacheKey is right later
+            var commitCacheKey = UtilsService.makeElementKey(resultCommitCopy); //save historic element
+            if (!edit) {
+                CacheService.put(commitCacheKey, resultCommitCopy, true);
+            }
+        }
+        var realCacheKey = UtilsService.makeElementKey(result, edit);
+        result._commitId = origResultCommit; //restore actual commitId
+        if (angular.equals(realCacheKey, requestCacheKey)) {
+            result = CacheService.put(requestCacheKey, result, true);
+        } else {
+            CacheService.put(requestCacheKey, realCacheKey.join('|'));
+            result = CacheService.put(realCacheKey, result, true);
+        }
+        return result;
+    };
+
+    var cacheDeletedElement = function(reqOb, deletedOb) {
+        var requestCacheKey = getElementKey(reqOb, deletedOb.id);
+        requestCacheKey.push('deleted');
+        var commitCacheKey = UtilsService.makeElementKey(deletedOb);
+        CacheService.put(requestCacheKey, commitCacheKey.join('|'));
+        CacheService.put(commitCacheKey, deletedOb, true);
     };
 
     /**
@@ -136,7 +235,7 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * 
      * ## Example
      *  <pre>
-        ElementService.getElementForEdit('element_id').then(
+        ElementService.getElementForEdit(reqOb).then(
             function(editableElement) {
                 editableElement.name = 'changed name'; //immediately change a name and save
                 ElementService.updateElement(editableElement).then(
@@ -154,53 +253,38 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
         );
         </pre>
      * 
-     * @param {string} id The id of the element to get.
-     * @param {boolean} [update=false] Get the latest from server first, 
-     *      else just make a copy of what's in the element cache
-     * @param {string} [workspace=master] (optional) workspace to use
+     * @param {object} reqOb see description of getElement.
+     * @param {integer} [weight=1] priority
+     * @param {boolean} [update=false] update from server
      * @returns {Promise} The promise will be resolved with the element object, 
      *      multiple calls to this method with the same id would result in 
      *      references to the same object. This object can be edited without
      *      affecting the same element object that's used for displays
      */
-    var getElementForEdit = function(id, update, workspace) {
-        var n = normalize(id, update, workspace, null, true);
-
-        var deferred = $q.defer();
-        if (CacheService.exists(n.cacheKey) && !n.update)
-            deferred.resolve(CacheService.get(n.cacheKey));
-        else {
-            getElement(id, n.update, n.ws)
-            .then(function(data) {
-                var edit = _.cloneDeep(data);
-                deferred.resolve(CacheService.put(n.cacheKey, UtilsService.cleanElement(edit, true), true));
-            }, function(reason) {
-                deferred.reject(reason);
-            });
+    var getElementForEdit = function(reqOb, weight, update) {
+        UtilsService.normalize(reqOb);
+        var requestCacheKey = getElementKey(reqOb, reqOb.elementId, true);
+        var key = URLService.getElementURL(reqOb) + 'edit';
+        if (inProgress.hasOwnProperty(key)) {
+            return inProgress[key];
         }
-        return deferred.promise;
-    };
-
-    /**
-     * @ngdoc method
-     * @name mms.ElementService#getElementsForEdit
-     * @methodOf mms.ElementService
-     * 
-     * @description
-     * Gets element objects to edit by ids. 
-     * 
-     * @param {Array.<string>} ids The ids of the elements to get for edit.
-     * @param {boolean} [update=false] Get latest from server first
-     * @param {string} [workspace=master] (optional) workspace to use
-     * @returns {Promise} The promise will be resolved with an array of editable
-     * element objects that won't affect the corresponding displays
-     */
-    var getElementsForEdit = function(ids, update, workspace) {
-        var promises = [];
-        ids.forEach(function(id) {
-            promises.push(getElementForEdit(id, update, workspace));
+        var deferred = $q.defer();
+        var cached = CacheService.get(requestCacheKey);
+        if (cached && !update) {
+            deferred.resolve(cached);
+            return deferred.promise;
+        }
+        inProgress[key] = deferred.promise;
+        getElement(reqOb, weight, update)
+        .then(function(result) {
+            var copy = JSON.parse(JSON.stringify(result));
+            deferred.resolve(cacheElement(reqOb, copy, true));
+        }, function(reason) {
+            deferred.reject(reason);
+        }).finally(function() {
+            delete inProgress[key];
         });
-        return $q.all(promises);
+        return deferred.promise;
     };
 
     /**
@@ -211,16 +295,18 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * @description
      * Gets element's owned element objects. TBD (stub)
      * 
-     * @param {string} id The id of the elements to get owned elements for
-     * @param {boolean} [update=false] update elements from server
-     * @param {string} [workspace=master] (optional) workspace to use
-     * @param {string} [version=latest] (optional) alfresco version number or timestamp
+     * @param {object} reqOb see description of getElement, add 'depth' key.
+     * @param {integer} [weight=1] priority
+     * @param {boolean} [update=false] update from server
      * @returns {Promise} The promise will be resolved with an array of 
      * element objects 
      */
-    var getOwnedElements = function(id, update, workspace, version) {
-        var n = normalize(id, update, workspace, version);
-        return getGenericElements(URLService.getOwnedElementURL(id, n.ws, n.ver), 'elements', n.update, n.ws, n.ver);
+    var getOwnedElements = function(reqOb, weight, update) {
+        UtilsService.normalize(reqOb);
+        if (!reqOb.depth) {
+            reqOb.depth = -1;
+        }
+        return getGenericElements(URLService.getOwnedElementURL(reqOb), reqOb, 'elements', weight, update);
     };
 
     /**
@@ -232,49 +318,88 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * This is a method to call a predefined url that returns elements json.
      * A key provides the key of the json that has the elements array. 
      *
-     * ## Example (used by ViewService to get products in a site)
-     *  <pre>
-        ElementService.getGenericElements('/alfresco/service/sites/europa/products', 'products')
-        .then(
-            function(products) {
-                alert('got ' + products.length + ' products');
-            },
-            function(reason) {
-                alert('failed: ' + reason.message);
-            }
-        );
-        </pre>
-     *
      * @param {string} url the url to get
-     * @param {string} key json key that has the element array value
-     * @param {boolean} [update=false] update cache
-     * @param {string} [workspace=master] workspace associated, this will not change the url
-     * @param {string} [version=latest] timestamp associated, this will not change the url
+     * @param {object} reqOb see description of getElement.
+     * @param {string} jsonKey json key that has the element array value
+     * @param {integer} [weight=1] priority
+     * @param {boolean} [update=false] update from server
      */
-    var getGenericElements = function(url, key, update, workspace, version) {
-        var n = normalize(null, update, workspace, version);
-
-        var progress = 'getGenericElements(' + url + key + n.update + n.ws + n.ver + ')';
-        if (inProgress.hasOwnProperty(progress))
-            return inProgress[progress];
-
+    var getGenericElements = function(url, reqOb, jsonKey, weight, update) {
+        UtilsService.normalize(reqOb);
+        if (inProgress.hasOwnProperty(url)) {
+            HttpService.ping(url, weight);
+            return inProgress[url];
+        }
         var deferred = $q.defer();
-       
-        inProgress[progress] = deferred.promise;
-        $http.get(url)
-        .success(function(data, status, headers, config) {
-            var result = [];
-            data[key].forEach(function(element) {
-                var ekey = UtilsService.makeElementKey(element.sysmlid, n.ws, n.ver);
-                result.push(CacheService.put(ekey, UtilsService.cleanElement(element), true));
-            }); 
-            delete inProgress[progress];
-            deferred.resolve(result); 
-        }).error(function(data, status, headers, config) {
-            URLService.handleHttpStatus(data, status, headers, config, deferred);
-            delete inProgress[progress];
+        inProgress[url] = deferred.promise;
+        
+        HttpService.get(url,
+            function(data, status, headers, config) {
+                var results = [];
+                var elements = data[jsonKey];
+                for (var i = 0; i < elements.length; i++) {
+                    var element = elements[i];
+                    if (!element) {//check for possible null
+                        continue;
+                    }
+                    results.push(cacheElement(reqOb, element));
+                }
+                delete inProgress[url];
+                deferred.resolve(results);
+            },
+            function(data, status, headers, config) {
+                URLService.handleHttpStatus(data, status, headers, config, deferred);
+                delete inProgress[url];
+            },
+            weight
+        );
+        return deferred.promise;
+    };
+
+    //called by updateElement, fills in all keys for element to be updated
+    //will also send any cached edited field for the element to be updated
+    var fillInElement = function(elementOb) {
+        /*
+        var deferred = $q.defer();
+        getElement({
+            projectId: elementOb._projectId,
+            elementId: elementOb.id,
+            commitId: 'latest',
+            refId: elementOb._refId
+        }, 2)
+        .then(function(data) {
+        */
+            var ob = JSON.parse(JSON.stringify(elementOb)); //make a copy
+            ob._commitId = 'latest';
+            var editOb = CacheService.get(UtilsService.makeElementKey(ob, true));
+            //for (var key in elementOb) {
+            //    ob[key] = elementOb[key];
+            //}
+            if (editOb) {
+                for (var key in editOb) {
+                    if (!elementOb.hasOwnProperty(key)) {
+                        ob[key] = editOb[key];
+                    }
+                }
+            }
+            if (ob._displayedElementIds) {
+                delete ob._displayedElementIds;
+            }
+            if (ob._allowedElementIds) {
+                delete ob._allowedElementIds;
+            }
+            if (ob._childViews && !elementOb._childViews) {
+                delete ob._childViews;
+            }
+            delete ob._commitId;
+            return ob;
+        /*
+            deferred.resolve(ob);
+        }, function() {
+            deferred.resolve(elementOb);
         });
         return deferred.promise;
+        */
     };
 
     /**
@@ -283,98 +408,101 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * @methodOf mms.ElementService
      * 
      * @description
-     * Save element to alfresco and update the cache if successful, the element object
+     * Save element to mms and update the cache if successful, the element object
      * must have an id, and whatever property that needs to be updated.
      * 
      * {@link mms.ElementService#methods_getElementForEdit see also getElementForEdit}
      *
-     * ## Example
-     *  <pre>
-        var update = {
-            'sysmlid': 'element_id',
-            'read': '2014-07-01T08:57:36.915-0700', //time the element was last read from the server
-            'name': 'updated name',
-            'documentation': '<p>updated doc</p>',
-            'specialization': {
-                'type': 'Property',
-                'value': [
-                    {
-                        'type': 'LiteralString', 
-                        'string': 'updated string value'
-                    }
-                ]
-            }
-        };
-        ElementService.updateElement(update).then(
-            function(updatedElement) { //this element will have the latest info as well as read time
-                alert('update successful');
-            },
-            function(reason) {
-                alert('update failed: ' + reason.message);
-            }
-        );
-        </pre>
-     * 
-     * @param {Object} elem An object that contains element id and any property changes to be saved.
-     * @param {string} [workspace=master] (optional) workspace to use
+     * @param {object} elementOb An object that contains _projectId, _refId, sysmlId and any property changes to be saved.
      * @returns {Promise} The promise will be resolved with the updated cache element reference if 
      *      update is successful. If a conflict occurs, the promise will be rejected with status of 409
      */
-    var updateElement = function(elem, workspace) {
+    var updateElement = function(elementOb, returnChildViews) { //elementOb should have the keys needed to make url
+
         var deferred = $q.defer();
-        if (!elem.hasOwnProperty('sysmlid'))
-            deferred.reject('Element id not found, create element first!');
-        else {
-            var n = normalize(elem.sysmlid, null, workspace, null);
-            $http.post(URLService.getPostElementsURL(n.ws), {'elements': [elem]})
-            .success(function(data, status, headers, config) {
-                var resp = CacheService.put(n.cacheKey, UtilsService.cleanElement(data.elements[0]), true);
-                //special case for products view2view updates 
-                if (resp.specialization && resp.specialization.view2view &&
-                    elem.specialization && elem.specialization.view2view)
-                    resp.specialization.view2view = elem.specialization.view2view;
-                deferred.resolve(resp);
-                /* TODO better way to sync edits on update, maybe app level*/
-                var edit = CacheService.get(UtilsService.makeElementKey(elem.sysmlid, n.ws, null, true));
-                if (edit) {
-                    _.merge(edit, resp);
-                    UtilsService.cleanElement(edit, true);
+        var handleSuccess = function(data) {
+            var e = null;
+            if (data.elements.length > 1 && elementOb.id) {
+                for (var i = 0; i < data.elements.length; i++) {
+                    if (data.elements[i].id === elementOb.id) {
+                        e = data.elements[i];
+                    }
                 }
-            }).error(function(data, status, headers, config) {
-                if (status === 409) {
-                    var server = _.cloneDeep(data.elements[0]);
-                    var newread = server.read;
-                    var newmodified = server.modified;
-                    delete server.modified;
-                    delete server.read;
-                    delete server.creator;
-                    UtilsService.cleanElement(server);
-                    var orig = CacheService.get(UtilsService.makeElementKey(elem.sysmlid, n.ws, null, false));
-                    if (!orig) {
-                        URLService.handleHttpStatus(data, status, headers, config, deferred);
+                if (!e) {//TODO shouldn't happen
+                    e = data.elements[0];
+                }
+            } else {
+                e = data.elements[0];
+            }
+            var metaOb = {
+                projectId: e._projectId,
+                refId: e._refId,
+                commitId: 'latest',
+                elementId: e.id
+            };
+            var resp = cacheElement(metaOb, e);
+            var editCopy = JSON.parse(JSON.stringify(e));
+            cacheElement(metaOb, editCopy, true);
+            var history = CacheService.get(['history', metaOb.projectId, metaOb.refId, metaOb.elementId]);
+            if (history) {
+                history.unshift({_creator: e._modifier, _created: e._modified, id: e._commitId});
+            }
+            deferred.resolve(resp);
+        };
+
+        if (!elementOb.hasOwnProperty('id')) {
+            deferred.reject({status: 400, data: '', message: 'Element id not found, create element first!'});
+            return deferred.promise;
+        }
+        var postElem = fillInElement(elementOb);
+        //.then(function(postElem) {
+            $http.post(URLService.getPostElementsURL({
+                    projectId: postElem._projectId,
+                    refId: postElem._refId,
+                    returnChildViews: returnChildViews
+                }), {
+                    elements: [postElem],
+                    source: ApplicationService.getSource()
+                }, {timeout: 60000})
+            .then(function(response) {
+                var rejected = response.data.rejected;
+                if (rejected && rejected.length > 0 && rejected[0].code === 304 && rejected[0].element) { //elem will be rejected if server detects no changes
+                    deferred.resolve(rejected[0].element);
+                    return;
+                }
+                if (!angular.isArray(response.data.elements) || response.data.elements.length === 0) {
+                    deferred.reject({status: 500, data: '', message: "Server Error: empty response"});
+                    return;
+                }
+                handleSuccess(response.data);
+            }, function(response) {
+                if (response.status === 409) {
+                    var serverOb = response.data.elements[0];
+                    UtilsService.cleanElement(serverOb);
+                    var origCommit = elementOb._commitId;
+                    elementOb._commitId = 'latest';
+                    var origOb = CacheService.get(UtilsService.makeElementKey(elementOb));
+                    elementOb._commitId = origCommit;
+                    if (!origOb) {
+                        URLService.handleHttpStatus(response.data, response.status, response.headers, response.config, deferred);
+                        return;
+                    } 
+                    if (!UtilsService.hasConflict(postElem, origOb, serverOb)) {
+                        elementOb._read = serverOb._read;
+                        elementOb._modified = serverOb._modified;
+                        updateElement(elementOb, returnChildViews)
+                        .then(function(good){
+                            deferred.resolve(good);
+                        }, function(reason) {
+                            deferred.reject(reason);
+                        });
                     } else {
-                        var current = _.cloneDeep(orig);
-                        delete current.modified;
-                        delete current.read;
-                        delete current.creator;
-                        UtilsService.cleanElement(current);
-                        if (angular.equals(server, current)) {
-                            elem.read = newread;
-                            elem.modified = newmodified;
-                            updateElement(elem, workspace)
-                            .then(function(good){
-                                deferred.resolve(good);
-                            }, function(reason) {
-                                deferred.reject(reason);
-                            });
-                        } else {
-                            URLService.handleHttpStatus(data, status, headers, config, deferred);
-                        }
+                        URLService.handleHttpStatus(response.data, response.status, response.headers, response.config, deferred);
                     }
                 } else
-                    URLService.handleHttpStatus(data, status, headers, config, deferred);
+                    URLService.handleHttpStatus(response.data, response.status, response.headers, response.config, deferred);
             });
-        } 
+        //}); 
         return deferred.promise;
     };
 
@@ -382,42 +510,70 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * @ngdoc method
      * @name mms.ElementService#updateElements
      * @methodOf mms.ElementService
-     * 
+     *
      * @description
      * Save elements to alfresco and update the cache if successful.
-     * 
-     * @param {Array.<Object>} elems Array of element objects that contains element id and any property changes to be saved.
-     * @param {string} [workspace=master] (optional) workspace to use
-     * @returns {Promise} The promise will be resolved with an array of updated element references if 
-     *      update is successful.
+     *
+     * @param {Array.<Object>} elementObs, array of element objects that contains element id and any property changes to be saved.
+     * @param {boolean} returnChildViews, whether to include childViews
+     * @returns {Promise} The promise will be resolved with an array of updated element references if
+     *      update is successful and will be rejected with an object with the following format:
+     *      {failedRequests: list of rejection reasons, successfulRequests: array of updated elements }
      */
-    var updateElements = function(elems, workspace) {
-        /*var promises = [];
-        elems.forEach(function(elem) {
-            promises.push(updateElement(elem, workspace));
-        });
-        return $q.all(promises);*/
+    var updateElements = function(elementObs, returnChildViews) {
         var deferred = $q.defer();
-        var ws = !workspace ? 'master' : workspace;
-        $http.post(URLService.getPostElementsURL(ws), {'elements': elems})
-        .success(function(data, status, headers, config) {
-            data.elements.forEach(function(elem) {
-                var cacheKey = UtilsService.makeElementKey(elem.sysmlid, ws, null, false);
-                var resp = CacheService.put(cacheKey, UtilsService.cleanElement(elem), true);
-                //special case for products view2view updates 
-                if (resp.specialization && resp.specialization.view2view &&
-                    elem.specialization && elem.specialization.view2view)
-                    resp.specialization.view2view = elem.specialization.view2view;
-                var edit = CacheService.get(UtilsService.makeElementKey(elem.sysmlid, ws, null, true));
-                if (edit) {
-                    _.merge(edit, resp);
-                    UtilsService.cleanElement(edit, true);
+        if ( _validate(elementObs) ) {
+            var postElements = elementObs.map(function(elementOb) {
+                return fillInElement(elementOb);
+            });
+
+            var groupOfElements = _groupElementsByProjectIdAndRefId(postElements);
+            var promises = [];
+
+            Object.keys(groupOfElements).forEach(function (key) {
+                promises.push(_bulkUpdate(groupOfElements[key], returnChildViews));
+            });
+
+             // responses is an array of response corresponding to both successful and failed requests with the following format
+             // [ { state: 'fulfilled', value: the value returned by the server },
+             //   { state: 'rejected', reason: {status, data, message} -- Specified by handleHttpStatus method }
+             // ]
+            $q.allSettled(promises).then(function(responses) {
+                // get all the successful requests
+                var successfulRequests = responses.filter(function(response) {
+                    return response.state === 'fulfilled';
+                });
+
+                var successValues = _.flatten( successfulRequests.map(function(response){
+                    return response.value;
+                }));
+
+                if ( successfulRequests.length === promises.length ) {
+                    // All requests succeeded
+                    deferred.resolve(successValues);
+                } else {
+                    // some requests failed
+                    var rejectionReasons = responses.filter(function(response) {
+                        return response.state === 'rejected';
+                    }).map(function(response) {
+                        return response.reason;
+                    });
+
+                    // since we could have multiple failed requests when having some successful requests,
+                    // reject with the following format so that the client can deal with them at a granular level if
+                    // desired
+                    deferred.reject({
+                        failedRequests: rejectionReasons,
+                        successfulRequests: successValues
+                    });
                 }
             });
-            deferred.resolve(data.elements);
-        }).error(function(data, status, headers, config) {
-            URLService.handleHttpStatus(data, status, headers, config, deferred);
-        });
+        } else {
+            deferred.reject( {
+                failedRequests: [ { status: 400, data: elementObs, message: 'Some of the elements do not have id, _projectId, _refId' } ],
+                successfulRequests: []
+            });
+        }
         return deferred.promise;
     };
 
@@ -427,66 +583,40 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * @methodOf mms.ElementService
      * 
      * @description
-     * Create element on alfresco.
-     *
-     * ## Example
-     *  <pre>
-        var create = {
-            'name': 'new name',
-            'owner': 'owner_id',
-            'documentation': '<p>new doc</p>',
-            'specialization': {
-                'type': 'Property',
-                'value': [
-                    {
-                        'type': 'LiteralString', 
-                        'string': 'new value'
-                    }
-                ]
-            }
-        };
-        ElementService.createElement(create).then(
-            function(createdElement) { //this element will have a generated id
-                alert('create successful with id: ' + createdElement.sysmlid);
-            },
-            function(reason) {
-                alert('create failed: ' + reason.message);
-            }
-        );
-        </pre>
+     * Create element on mms.
      * 
-     * @param {Object} elem Element object that must have an owner id.
-     * @param {string} [workspace=master] (optional) workspace to use
-     * @param {string} [site=null] (optional) site to post to (if the element has no predefined owner,
-     *      give the site argument so the server can put it in the site's holding bin)
+     * @param {object} reqOb see description of getElement, instead of elementId, 'element' key should be 
+     *                  the element object to create
      * @returns {Promise} The promise will be resolved with the created element references if 
      *      create is successful.
      */
-    var createElement = function(elem, workspace, site) {
-        var n = normalize(null, null, workspace, null);
-
+    var createElement = function(reqOb) {
+        UtilsService.normalize(reqOb);
         var deferred = $q.defer();
-        //if (!elem.hasOwnProperty('owner')) {
-        //    deferred.reject('Element create needs an owner'); //relax this?
-        //    return deferred.promise;
-        //    elem.owner = 'holding_bin_project'; //hardcode a holding bin for owner for propose element
-        //}
-        
-        /*if (elem.hasOwnProperty('sysmlid')) {
-            deferred.reject({status: 400, message: 'Element create cannot have id'});
-            return deferred.promise;
-        }*/
 
-        var url = URLService.getPostElementsURL(n.ws);
-        if (site)
-            url = URLService.getPostElementsWithSiteURL(n.ws, site);
-        $http.post(url, {'elements': [elem]})
-        .success(function(data, status, headers, config) {
-            var resp = data.elements[0];
-            var key = UtilsService.makeElementKey(resp.sysmlid, n.ws, 'latest');
-            deferred.resolve(CacheService.put(key, UtilsService.cleanElement(resp), true));
-        }).error(function(data, status, headers, config) {
-            URLService.handleHttpStatus(data, status, headers, config, deferred);
+        var url = URLService.getPostElementsURL(reqOb);
+        $http.post(url, {'elements': [reqOb.element], 'source': ApplicationService.getSource()})
+        .then(function(response) {
+            if (!angular.isArray(response.data.elements) || response.data.elements.length === 0) {
+                deferred.reject({status: 500, data: '', message: "Server Error: empty response"});
+                return;
+            }
+            var resp = null;
+            if (response.data.elements.length > 1 && reqOb.element.id) {
+                for (var i = 0; i < response.data.elements.length; i++) {
+                    if (response.data.elements[i].id === reqOb.element.id) {
+                        resp = response.data.elements[i];
+                    }
+                }
+                if (!resp) {//shouldn't happen!
+                    resp = response.data.elements[0];
+                }
+            } else {
+                resp = response.data.elements[0];
+            }
+            deferred.resolve(cacheElement(reqOb, resp));
+        }, function(response) {
+            URLService.handleHttpStatus(response.data, response.status, response.headers, response.config, deferred);
         });
         return deferred.promise;
     };
@@ -499,17 +629,32 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * @description
      * Create elements to alfresco and update the cache if successful.
      * 
-     * @param {Array.<Object>} elems Array of element objects that must contain owner id.
-     * @param {string} [workspace=master] (optional) workspace to use
+     * @param {object} reqOb see description of getElement, instead of elementId, 'elements' key should be 
+     *                  the array of element object to create
      * @returns {Promise} The promise will be resolved with an array of created element references if 
      *      create is successful.
      */
-    var createElements = function(elems, workspace) {
-        var promises = [];
-        elems.forEach(function(elem) {
-            promises.push(createElement(elem, workspace));
+    var createElements = function(reqOb) {
+        UtilsService.normalize(reqOb);
+        var deferred = $q.defer();
+        var url = URLService.getPostElementsURL(reqOb);
+        $http.post(url, {'elements': reqOb.elements, 'source': ApplicationService.getSource()})
+        .then(function(response) {
+            if (!angular.isArray(response.data.elements) || response.data.elements.length === 0) {
+                deferred.reject({status: 500, data: '', message: "Server Error: empty response"});
+                return;
+            }
+            var results = [];
+            for (var i = 0; i < response.data.elements.length; i++) {
+                results.push(cacheElement(reqOb, response.data.elements[i]));
+                var editCopy = JSON.parse(JSON.stringify(response.data.elements[i]));
+                cacheElement(reqOb, editCopy, true);
+            }
+            deferred.resolve(results);
+        }, function(response) {
+            URLService.handleHttpStatus(response.data, response.status, response.headers, response.config, deferred);
         });
-        return $q.all(promises);
+        return deferred.promise;
     };
 
     /**
@@ -521,14 +666,14 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * Checks if the current cached element has been updated on the server, does not update the cache. 
      * If the element doesn't exist in the cache, it's considered not outdated
      *
-     * @param {string} id Element id
-     * @param {string} [workspace=master] workspace
+     * @param {object} reqOb see description of getElement
      * @returns {Promise} Resolved with {status: false} if cache is up to date, 
      *      Resolved with {status: true, server: server element, cache: cache element} if cache is outdated
      */
-    var isCacheOutdated = function(id, workspace) {
+    var isCacheOutdated = function(reqOb) {//TODO
         var deferred = $q.defer();
-        var ws = !workspace ? 'master' : workspace;
+        deferred.resolve({status: false});
+        /*var ws = !workspace ? 'master' : workspace;
         var orig = CacheService.get(UtilsService.makeElementKey(id, ws, null, false));
         if (!orig) {
             deferred.resolve({status: false});
@@ -537,14 +682,14 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
         $http.get(URLService.getElementURL(id, ws, 'latest'))
         .success(function(data, status, headers, config) {
             var server = _.cloneDeep(data.elements[0]);
-            delete server.modified;
-            delete server.read;
-            delete server.creator;
+            delete server._modified;
+            delete server._read;
+            delete server._creator;
             UtilsService.cleanElement(server);
             var current = _.cloneDeep(orig);
-            delete current.modified;
-            delete current.read;
-            delete current.creator;
+            delete current._modified;
+            delete current._read;
+            delete current._creator;
             UtilsService.cleanElement(current);
             if (angular.equals(server, current)) {
                 deferred.resolve({status: false});
@@ -553,29 +698,8 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
             }
         }).error(function(data, status, headers, config) {
             URLService.handleHttpStatus(data, status, headers, config, deferred);
-        });
+        });*/
         return deferred.promise;
-    };
-
-    /**
-     * @ngdoc method
-     * @name mms.ElementService#isDirty
-     * @methodOf mms.ElementService
-     * 
-     * @description
-     * TBD, do not use. Check if element has been edited and not saved to server
-     * 
-     * @param {string} id Element id
-     * @returns {boolean} Whether element is dirty
-     */
-    var isDirty = function(id, workspace) {
-        var editKey = UtilsService.makeElementKey(id, workspace, null, true);
-        var normalKey = UtilsService.makeElementKey(id, workspace);
-        var normal = CacheService.get(normalKey);
-        var edit = CacheService.get(editKey);
-        if (edit && !_.isEqual(normal, edit))
-            return true;
-        return false;
     };
 
     /**
@@ -586,14 +710,32 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * @description
      * Search for elements based on some query
      * 
-     * @param {string} query A query string (TBD)
-     * @param {boolean} [update=false] Whether to update from server
-     * @param {string} [workspace=master] (optional) workspace to use
-     * @returns {Promise} The promise will be resolved with an array of element objects
+     * @param {object} reqOb see description of getElement
+     * @param {object} query JSON object with Elastic query format
+     * @param {integer} [weight=1] priority
+     * @returns {Promise} The promise will be resolved with an array of element objects.
+     *                  The element results returned will be a clone of the original server response and not cache references
      */
-    var search = function(query, update, workspace) {
-        var n = normalize(null, update, workspace, null);
-        return getGenericElements(URLService.getElementSearchURL(query, n.ws), 'elements', n.update, n.ws, n.ver);
+    var search = function(reqOb, query, weight) {
+        UtilsService.normalize(reqOb);
+        var url = URLService.getElementSearchURL(reqOb);
+        var deferred = $q.defer();
+        $http.put(url, query)
+            .then(function(data) {
+                //var result = [];
+                //for (var i = 0; i < data.data.elements.length; i++) {
+                //    var element = data.data.elements[i];
+                //    var cacheE = cacheElement(reqOb, element);
+                //    var toAdd = JSON.parse(JSON.stringify(element)); //make clone
+                //    toAdd._relatedDocuments = cacheE._relatedDocuments;
+                //    result.push(toAdd);
+                //}
+                //deferred.resolve(result);
+                deferred.resolve(data.data);
+            }, function(data) {
+                URLService.handleHttpStatus(data, data.status, data.headers, data.config, deferred);
+            });
+        return deferred.promise;
     };
 
     /**
@@ -604,96 +746,157 @@ function ElementService($q, $http, URLService, UtilsService, CacheService, _) {
      * @description
      * Queries for an element's entire version history
      *
-     * @param {string} id The id of the element
-     * @param {boolean} [update=false] update element version cache
-     * @param {string} [workspace=master] workspace
-     * @returns {Promise} The promise will be resolved with an array of version objects.
+     * @param {object} reqOb see getElement
+     * @param {integer} [weight=1] priority
+     * @param {boolean} [update=false] update from server
+     * @returns {Promise} The promise will be resolved with an array of commit objects.
      */
-    var getElementVersions = function(id, update, workspace) {
-        var n = normalize(id, update, workspace, 'versions');
+    var getElementHistory = function(reqOb, weight, update) {
+        UtilsService.normalize(reqOb);
+
+        var key = URLService.getElementHistoryURL(reqOb);
+        if (inProgress.hasOwnProperty(key)) {
+            return inProgress[key];
+        }
+        var requestCacheKey = ['history', reqOb.projectId, reqOb.refId, reqOb.elementId];
         var deferred = $q.defer();
-        if (CacheService.exists(n.cacheKey) && !n.update) {
-            deferred.resolve(CacheService.get(n.cacheKey));
+        if (CacheService.exists(requestCacheKey) && !update) {
+            deferred.resolve(CacheService.get(requestCacheKey));
             return deferred.promise;
         }
-        $http.get(URLService.getElementVersionsURL(id, n.ws))
-        .success(function(data, statas, headers, config){
-            deferred.resolve(CacheService.put(n.cacheKey, data.versions, true));
-        }).error(function(data, status, headers, config){
-            URLService.handleHttpStatus(data, status, headers, config, deferred);
+        inProgress[key] = deferred.promise;
+        $http.get(URLService.getElementHistoryURL(reqOb))
+        .then(function(response){
+            deferred.resolve(CacheService.put(requestCacheKey, response.data.commits, true));
+            delete inProgress[key];
+        }, function(response) {
+            URLService.handleHttpStatus(response.data, response.status, response.headers, response.config, deferred);
+            delete inProgress[key];
         });
         return deferred.promise;
     };
 
-    /**
-     * @ngdoc method
-     * @name mms.ElementService#deleteElement
-     * @methodOf mms.ElementService
-     * 
-     * @description
-     * Delete an element 
-     *
-     * @param {string} id The id of the element
-     * @param {string} [workspace=master] workspace
-     * @returns {Promise} The promise will be resolved with server response if delete is successful.
-     */
-    var deleteElement = function(id, workspace) {
-        var ws = !workspace ? 'master' : workspace;
+    var getElementKey = function(reqOb, id, edit) {
+        var cacheKey = UtilsService.makeElementKey({
+            _projectId: reqOb.projectId,
+            id: id ? id : reqOb.elementId,
+            _commitId: reqOb.commitId,
+            _refId: reqOb.refId
+        }, edit);
+        return cacheKey;
+    };
+
+    var reset = function() {
+        inProgress = {};
+    };
+
+    function _groupElementsByProjectIdAndRefId(elementObs) {
+        return _.groupBy(elementObs, function(element) {
+            return element._projectId + '|' + element._refId;
+        });
+    }
+
+    function _createMetaOb(element) {
+        return {
+            projectId: element._projectId,
+            refId: element._refId,
+            commitId: 'latest',
+            elementId: element.id
+        };
+    }
+
+    function _validate(elementObs) {
+        return _.every( elementObs, function( elementOb ) {
+            return elementOb.hasOwnProperty('id') && elementOb.hasOwnProperty('_projectId') && elementOb.hasOwnProperty('_refId');
+        });
+    }
+
+    function _bulkUpdate(elements, returnChildViews) {
         var deferred = $q.defer();
-        var key = UtilsService.makeElementKey(id, ws, null, false);
-        $http.delete(URLService.getElementURL(id, ws, 'latest'))
-        .success(function(data, status, headers, config) {
-            CacheService.remove(key);
-            deferred.resolve(data);
-        }).error(function(data, status, headers, config) {
-            URLService.handleHttpStatus(data, status, headers, config, deferred);
-        });
+        $http.post(URLService.getPostElementsURL({
+            projectId: elements[0]._projectId,
+            refId: elements[0]._refId,
+            returnChildViews: returnChildViews
+        }), {
+            elements: elements,
+            source: ApplicationService.getSource()
+        }, {timeout: 60000})
+            .then(function (response) {
+                _bulkUpdateSuccessHandler(response, deferred);
+            }, function (response) {
+                _bulkUpdateFailHandler(response, deferred, elements);
+            });
         return deferred.promise;
-    };
+    }
 
-    /**
-     * @ngdoc method
-     * @name mms.ElementService#deleteElements
-     * @methodOf mms.ElementService
-     * 
-     * @description
-     * Delete elements from alfresco and update the cache if successful.
-     * 
-     * @param {Array.<string>} ids Array of element ids to delete
-     * @param {string} [workspace=master] (optional) workspace to use
-     * @returns {Promise} The promise will be resolved with an array of updated element references if 
-     *      delete is successful.
-     */
-    var deleteElements = function(ids, workspace) {
-        var promises = [];
-        ids.forEach(function(id) {
-            promises.push(deleteElement(id, workspace));
+    function _bulkUpdateSuccessHandler(serverResponse, deferred) {
+        var results = [];
+        var elements = serverResponse.data.elements;
+        elements.forEach(function (e) {
+            var metaOb = _createMetaOb(e);
+            var editCopy = JSON.parse(JSON.stringify(e));
+            results.push(cacheElement(metaOb, e));
+
+            cacheElement(metaOb, editCopy, true);
+
+            var history = CacheService.get(['history', metaOb.projectId, metaOb.refId, metaOb.elementId]);
+            if (history) {
+                history.unshift({_creator: e._modifier, _created: e._modified, id: e._commitId});
+            }
         });
-        return $q.all(promises);
-    };
+        var rejected = serverResponse.data.rejected;
+        if (rejected && rejected.length > 0) {
+            rejected.forEach(function(e) {
+                if (e.code === 304 && e.element) {
+                    results.push(e.element); //add any server rejected elements because they haven't changed
+                }
+            });
+        }
+        deferred.resolve(results);
+    }
 
-    var normalize = function(id, update, workspace, version, edit) {
-        var res = UtilsService.normalize({update: update, workspace: workspace, version: version});
-        res.cacheKey = UtilsService.makeElementKey(id, res.ws, res.ver, edit);
-        return res;
-    };
-
+    /** For now, not doing anything special when there is a "conflict" error **/
+    function _bulkUpdateFailHandler(response, deferred, elementObs) {
+        // for now the server doesn't return anything for the data properties, so override with the input
+        response.data = elementObs;
+        URLService.handleHttpStatus(response.data, response.status, response.headers, response.config, deferred);
+    }
+/*
+    function _getLatestVersionOfElement(reqOb) {
+        var deferred = $q.defer();
+        getElementHistory(reqOb).then(function(elementHistory) {
+            if (elementHistory.length > 1) {
+                // Index 0 is the deletion commit, 0 index is the the commit before deletion
+                var commitBeforeDelete = elementHistory[1];
+                reqOb.commitId = commitBeforeDelete.id;
+                reqOb.includeRecentVersionElement = false;
+                getElement(reqOb).then(function(element) {
+                    deferred.resolve(element);
+                }, deferred.reject);
+            } else {
+                // this case is not possible coz this method should only be called if the element is already deleted
+                // ( and with that there will be at least two commits, one for the add at the very beginning and one for the deletion )
+                deferred.reject();
+            }
+        }, deferred.reject);
+        return deferred.promise;
+    }
+*/
     return {
         getElement: getElement,
         getElements: getElements,
         getElementForEdit: getElementForEdit,
-        getElementsForEdit: getElementsForEdit,
         getOwnedElements: getOwnedElements,
         updateElement: updateElement,
         updateElements: updateElements,
         createElement: createElement,
         createElements: createElements,
+        fillInElement: fillInElement,
         getGenericElements: getGenericElements,
-        getElementVersions: getElementVersions,
-        deleteElement: deleteElement,
-        deleteElements: deleteElements,
+        getElementHistory: getElementHistory,
         isCacheOutdated: isCacheOutdated,
-        isDirty: isDirty,
-        search: search
+        cacheElement: cacheElement,
+        search: search,
+        reset: reset
     };
 }

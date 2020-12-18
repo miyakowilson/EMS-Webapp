@@ -1,61 +1,39 @@
 <div class="modal-header">
-  <h4>CREATE NEW VIEW</h4>
+    <h4 class="item-type-View"></i>Add view</h4>
 </div>
 
-<div class="modal-body comment-modal">
-  
-  <div class="comment-modal-input">
-
-    <div class="form-group">
-      <label>Name:</label>
-      <input class="form-control" ng-model="newView.name" type="text" placeholder="Type a name for your view here"></input>
+<div class="modal-body">
+    <div class="ve-light-tabs modal-top-tabs">
+        <ul class="nav nav-tabs">
+            <li class="uib-tab nav-item tab-item" ng-class="{'active': createForm}">
+                <a class="nav-link" ng-click="createForm = true"><i class="fa fa-plus"></i>Create New</a>
+            </li>
+            <li class="uib-tab nav-item tab-item" ng-class="{'active': !createForm}">
+                <a class="nav-link" ng-click="createForm = false"><i class="fa fa-search"></i>Search for existing</a>
+            </li>
+        </ul>
     </div>
 
-    <form ng-submit="search(searchText)">
-        <div class="form-search input-group">
-            <input class="form-control" type="text" ng-model="searchText" placeholder="Search for a view" />
-            <span class="input-group-btn">                
-                <button class="btn btn-primary" type="button" ng-click="search(searchText)">
-                <span class="btn-text">GO</span> <i ng-show="searching" class="fa fa-spin fa-spinner"></i></button>
-            </span>
-        </div>
-    </form>
-
-    <div class="misc-form-field">
-        <div class="form-filter" ng-show="mmsCfElements">
-            <input class="form-control" type="text" ng-model="filter" placeholder="Type here to filter elements in the table" />
+    <div ng-show="createForm">
+        <div class="form-group">
+            <label>Name (optional):</label>
+            <input class="form-control" ng-model="newView.name" ng-keyup="$event.keyCode == 13 ? ok() : null" type="text" placeholder="Type a name for your view here" autofocus>
         </div>
     </div>
-    <br>
-    <div class="container-fluid transclude-table">
-        <table class="table table-bordered">
 
-            <tr>
-                <th>NAME</th>
-                <th>QUALIFIED NAME</th>
-                <th>DOC</th>
-            </tr>
-
-            <tr ng-repeat="elem in mmsCfElements | filter:filter">
-                <td ng-click="addView(elem.sysmlid)" class="clickable">
-                    {{elem.name}}
-                </td>
-                <td>
-                    {{elem.qualifiedName}}
-                </td>
-                <td>
-                    {{elem.documentation | limitTo:20}}
-                </td>
-            </tr>
-
-        </table>
+    <div ng-show="!createForm">
+        <p>Begin by searching for the view, then click its name or documentation to add the view.</p>
+        <div class="radio">
+            <label><input type="radio" ng-model="newViewAggr.type" value="shared">Add view and its children</label><br>
+            <label><input type="radio" ng-model="newViewAggr.type" value="none">Add view only</label>
+        </div>
+        <mms-search mms-options="searchOptions" mms-project-id="{{projectOb.id}}" mms-ref-id="{{refOb.id}}"></mms-search>
     </div>
-
-  </div>
-
 </div>
 
 <div class="modal-footer">
-    <button class="btn btn-success" ng-click="ok()">CREATE <i ng-show="oking" class="fa fa-spin fa-spinner"></i></button>
-    <button class="btn btn-danger" ng-click="cancel()">CANCEL</button>
+    <button class="btn btn-primary" ng-show="createForm" ng-click="ok()">Create
+        <i ng-show="oking" class="fa fa-spin fa-spinner"></i>
+    </button>
+    <button class="btn btn-default" ng-click="cancel()">Cancel</button>
 </div>

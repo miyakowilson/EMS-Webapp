@@ -1,7 +1,7 @@
 'use strict';
 
 angular.module('mms.directives')
-.directive('mmsTranscludeDoc', ['ElementService', 'UtilsService', '$compile', '$log', 'growl', mmsTranscludeDoc]);
+.directive('mmsTranscludeDoc', ['Utils','ElementService', 'UtilsService', 'ViewService', 'UxService', 'AuthService', '$compile', '$templateCache', 'growl', '_', 'MathJax', mmsTranscludeDoc]);
 
 /**
  * @ngdoc directive
@@ -9,7 +9,14 @@ angular.module('mms.directives')
  *
  * @requires mms.ElementService
  * @requires mms.UtilsService
+ * @requires mms.ViewService
+ * @requires mms.UxService
+ * @requires mms.Utils
  * @requires $compile
+ * @requires $templateCache
+ * @requires growl
+ * @requires _
+ * @requires MathJax
  *
  * @restrict E
  *
@@ -20,78 +27,228 @@ angular.module('mms.directives')
  * 
  * ## Example
  *  <pre>
-    <mms-transclude-doc mms-eid="element_id"></mms-transclude-doc>
+    <mms-transclude-doc mms-element-id="element_id"></mms-transclude-doc>
     </pre>
  *
- * @param {string} mmsEid The id of the element whose doc to transclude
- * @param {string=master} mmsWs Workspace to use, defaults to master
- * @param {string=latest} mmsVersion Version can be alfresco version number or timestamp, default is latest
+ * @param {string} mmsElementId The id of the view
+ * @param {string} mmsProjectId The project id for the view
+ * @param {string=master} mmsRefId Reference to use, defaults to master
+ * @param {string=latest} mmsCommitId Commit ID, default is latest
+ * @param {bool} mmsWatchId set to true to not destroy element ID watcher
+ * @param {boolean=false} nonEditable can edit inline or not
  */
-function mmsTranscludeDoc(ElementService, UtilsService, $compile, $log, growl) {
+function mmsTranscludeDoc(Utils, ElementService, UtilsService, ViewService, UxService, AuthService, $compile, $templateCache, growl, _, MathJax) {
 
-    var mmsTranscludeDocLink = function(scope, element, attrs, mmsViewCtrl) {
-        var processed = false;
+    var template = $templateCache.get('mms/templates/mmsTranscludeDoc.html');
+
+    var fixPreSpanRegex = /<\/span>\s*<mms-cf/g;
+    var fixPostSpanRegex = /<\/mms-cf>\s*<span[^>]*>/g;
+    var emptyRegex = /^\s*$/;
+
+    var mmsTranscludeDocCtrl = function($scope) {
+
+        $scope.bbApi = {};
+        $scope.buttons = [];
+        $scope.buttonsInit = false;
+
+        $scope.bbApi.init = function() {
+            if (!$scope.buttonsInit) {
+                $scope.buttonsInit = true;
+                $scope.bbApi.addButton(UxService.getButtonBarButton("presentation-element-preview", $scope));
+                $scope.bbApi.addButton(UxService.getButtonBarButton("presentation-element-save", $scope));
+                $scope.bbApi.addButton(UxService.getButtonBarButton("presentation-element-saveC", $scope));
+                $scope.bbApi.addButton(UxService.getButtonBarButton("presentation-element-cancel", $scope));
+                $scope.bbApi.addButton(UxService.getButtonBarButton("presentation-element-delete", $scope));
+                $scope.bbApi.setPermission("presentation-element-delete", $scope.isDirectChildOfPresentationElement);
+            }
+        };
+    };
+
+    var mmsTranscludeDocLink = function(scope, domElement, attrs, controllers) {
+        var mmsViewCtrl = controllers[0];
+        var mmsViewPresentationElemCtrl = controllers[1];
+        scope.recompileScope = null;
         scope.cfType = 'doc';
-        element.click(function(e) {
+        scope.editorApi = {};
+        domElement.click(function(e) {
+            if (scope.startEdit && !scope.nonEditable)
+                scope.startEdit();
+
             if (mmsViewCtrl)
-                mmsViewCtrl.transcludeClicked(scope.mmsEid);
-            if (e.target.tagName !== 'A' && e.target.tagName !== 'INPUT')
-                return false;
-            //e.stopPropagation();
+                mmsViewCtrl.transcludeClicked(scope.element);
+            if (scope.nonEditable && mmsViewCtrl && mmsViewCtrl.isEditable()) {
+                growl.warning("Cross Reference is not editable.");
+            }
+            e.stopPropagation();
         });
 
-        var recompile = function() {
-            element.empty();
-            var doc = scope.element.documentation;
-            if (!doc)
-                doc = '<p ng-class="{placeholder: version!=\'latest\'}">(no documentation)</p>';
-            element.append(doc);
-            $compile(element.contents())(scope); 
+        var recompile = function(preview) {
+            if (scope.recompileScope) {
+                scope.recompileScope.$destroy();
+            }
+            domElement.empty();
+            var doc = preview ? scope.edit.documentation : scope.element.documentation;
+            if (!doc || emptyRegex.test(doc)) {
+                doc = '<p class="no-print placeholder">(no ' + scope.panelType + ')</p>';
+            }
+            doc = doc.replace(fixPreSpanRegex, "<mms-cf");
+            doc = doc.replace(fixPostSpanRegex, "</mms-cf>");
+            if (preview) {
+                domElement[0].innerHTML = '<div class="panel panel-info">'+doc+'</div>';
+            } else {
+                scope.isEditing = false;
+                domElement[0].innerHTML = doc;
+            }
+            $(domElement[0]).find('img').each(function(index) {
+                Utils.fixImgSrc($(this));
+            });
+            if (mmsViewPresentationElemCtrl) {
+                var peSpec = mmsViewPresentationElemCtrl.getPresentationElement();
+                var pe = mmsViewPresentationElemCtrl.getInstanceSpec();
+                if (pe && pe._veNumber && peSpec && (peSpec.type === 'TableT' || peSpec.type === 'Figure' || peSpec.type === 'Equation' || peSpec.type === 'ImageT')) {
+                    var type = (peSpec.type === 'TableT') ? 'table' : peSpec.type.toLowerCase();
+                    if (type === 'imaget') {
+                        type = 'figure';
+                    }
+                    UtilsService.addLiveNumbering(pe, $('#' + pe.id), type);
+                }
+            }
+            if (MathJax && !scope.mmsGenerateForDiff) {
+                MathJax.Hub.Queue(["Typeset", MathJax.Hub, domElement[0]]);
+            }
+            scope.recompileScope = scope.$new();
+            $compile(domElement.contents())(scope.recompileScope);
             if (mmsViewCtrl) {
                 mmsViewCtrl.elementTranscluded(scope.element);
             }
         };
 
-        scope.$watch('mmsEid', function(newVal, oldVal) {
-            if (!newVal || (newVal === oldVal && processed))
-                return;
-            processed = true;
-            if (UtilsService.hasCircularReference(scope, scope.mmsEid, 'doc')) {
-                element.html('<span class="error">Circular Reference!</span>');
-                //$log.log("prevent circular dereference!");
+        var idwatch = scope.$watch('mmsElementId', function(newVal) {
+            if (!newVal || !scope.mmsProjectId) {
                 return;
             }
-            var ws = scope.mmsWs;
-            var version = scope.mmsVersion;
-            if (mmsViewCtrl) {
-                var viewVersion = mmsViewCtrl.getWsAndVersion();
-                if (!ws)
-                    ws = viewVersion.workspace;
-                if (!version)
-                    version = viewVersion.version;
+            if (!scope.mmsWatchId) {
+                idwatch();
             }
-            scope.version = version ? version : 'latest';
-            ElementService.getElement(scope.mmsEid, false, ws, version)
+            if (UtilsService.hasCircularReference(scope, scope.mmsElementId, 'doc')) {
+                domElement.html('<span class="mms-error">Circular Reference!</span>');
+                return;
+            }
+            scope.projectId = scope.mmsProjectId;
+            scope.refId = scope.mmsRefId ? scope.mmsRefId : 'master';
+            scope.commitId = scope.mmsCommitId ? scope.mmsCommitId : 'latest';
+            domElement.html('(loading...)');
+            domElement.addClass("isLoading");
+            var reqOb = {elementId: scope.mmsElementId, projectId: scope.projectId, refId: scope.refId, commitId: scope.commitId, includeRecentVersionElement: true};
+            ElementService.getElement(reqOb, 1, false)
             .then(function(data) {
                 scope.element = data;
+                if (!scope.panelTitle) {
+                    scope.panelTitle = scope.element.name + " Documentation";
+                    scope.panelType = "Text";
+                }
                 recompile();
-                scope.$watch('element.documentation', recompile);
+                Utils.reopenUnsavedElts(scope, "documentation");
+
+                if (scope.commitId === 'latest') {
+                    scope.$on('element.updated', function (event, elementOb, continueEdit, stompUpdate) {
+                        if (elementOb.id === scope.element.id && elementOb._projectId === scope.element._projectId &&
+                            elementOb._refId === scope.element._refId && !continueEdit) {
+                            //actions for stomp
+                            if(stompUpdate && scope.isEditing === true) {
+                                growl.warning("This value has been changed: " + elementOb.name +
+                                    " modified by: " + elementOb._modifier, {ttl: -1});
+                            } else {
+                                recompile();
+                            }
+                        }
+                    });
+                }
             }, function(reason) {
-                element.html('<span class="error">doc cf ' + newVal + ' not found</span>');
-                growl.error('Cf Doc Error: ' + reason.message + ': ' + scope.mmsEid);
+                domElement.html('<span mms-annotation mms-req-ob="::reqOb" mms-recent-element="::recentElement" mms-type="::type" mms-cf-label="::cfLabel"></span>');
+                $compile(domElement.contents())(Object.assign(scope.$new(), {
+                    reqOb: reqOb,
+                    recentElement: reason.data.recentVersionOfElement,
+                    type: ViewService.AnnotationType.mmsTranscludeDoc,
+                    cfLabel: scope.mmsCfLabel
+                }));
+            }).finally(function() {
+                domElement.removeClass("isLoading");
             });
         });
+
+        if (mmsViewCtrl) {
+            scope.isEditing = false;
+            scope.elementSaving = false;
+            scope.view = mmsViewCtrl.getView();
+            //TODO remove this when deleting in parent PE directive
+            scope.isDirectChildOfPresentationElement = Utils.isDirectChildOfPresentationElementFunc(domElement, mmsViewCtrl);
+
+            scope.save = function() {
+                Utils.saveAction(scope, domElement, false);
+            };
+
+            scope.saveC = function() {
+                Utils.saveAction(scope, domElement, true);
+            };
+
+            scope.cancel = function() {
+                Utils.cancelAction(scope, recompile, domElement);
+            };
+
+            scope.startEdit = function() {
+                Utils.startEdit(scope, mmsViewCtrl, domElement, template, false);
+            };
+
+            scope.preview = function() {
+                Utils.previewAction(scope, recompile, domElement);
+            };
+        } 
+
+        if (mmsViewPresentationElemCtrl) {
+            scope.delete = function() {
+                Utils.deleteAction(scope, scope.bbApi, mmsViewPresentationElemCtrl.getParentSection());
+            };
+
+            scope.instanceSpec = mmsViewPresentationElemCtrl.getInstanceSpec();
+            scope.instanceVal = mmsViewPresentationElemCtrl.getInstanceVal();
+            scope.presentationElem = mmsViewPresentationElemCtrl.getPresentationElement();
+            var auto = [ViewService.TYPE_TO_CLASSIFIER_ID.Image, ViewService.TYPE_TO_CLASSIFIER_ID.Paragraph,
+                ViewService.TYPE_TO_CLASSIFIER_ID.List, ViewService.TYPE_TO_CLASSIFIER_ID.Table];
+
+            if (auto.indexOf(scope.instanceSpec.classifierIds[0]) >= 0)
+            //do not allow model generated to be deleted
+                scope.isDirectChildOfPresentationElement = false;
+            if (scope.isDirectChildOfPresentationElement) {
+                scope.panelTitle = scope.instanceSpec.name;
+                scope.panelType = scope.presentationElem.type; //this is hack for fake table/list/equation until we get actual editors
+                if (scope.panelType.charAt(scope.panelType.length-1) === 'T')
+                    scope.panelType = scope.panelType.substring(0, scope.panelType.length-1);
+                if (scope.panelType === 'Paragraph')
+                    scope.panelType = 'Text';
+                if (scope.panelType === 'Figure' || scope.panelType === 'ImageT')
+                    scope.panelType = 'Image';
+            }
+            if (scope.presentationElem) {
+                scope.editorType = scope.presentationElem.type;
+            }
+        }
     };
 
     return {
         restrict: 'E',
         scope: {
-            mmsEid: '@',
-            mmsWs: '@',
-            mmsVersion: '@'
+            mmsElementId: '@',
+            mmsProjectId: '@',
+            mmsRefId: '@',
+            mmsCommitId: '@',
+            mmsWatchId: '@',
+            nonEditable: '<',
+            mmsCfLabel: '@',
+            mmsGenerateForDiff: '<'
         },
-        require: '?^mmsView',
-        //controller: ['$scope', mmsTranscludeDocCtrl],
+        require: ['?^^mmsView','?^^mmsViewPresentationElem'],
+        controller: ['$scope', mmsTranscludeDocCtrl],
         link: mmsTranscludeDocLink
     };
 }

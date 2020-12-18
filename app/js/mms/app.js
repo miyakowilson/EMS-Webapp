@@ -1,561 +1,459 @@
 'use strict';
 
-angular.module('mmsApp', ['mms', 'mms.directives', 'fa.directive.borderLayout', 'ui.bootstrap', 'ui.router', 'ui.tree', 'angular-growl'])
-.config(function($stateProvider, $urlRouterProvider) {
+angular.module('mmsApp', ['mms', 'mms.directives', 'app.tpls', 'fa.directive.borderLayout', 'ui.bootstrap', 'ui.router', 'ui.tree', 'angular-growl', 'cfp.hotkeys', 'angulartics', 'angulartics.piwik', 'ngStorage', 'ngAnimate', 'ngPromiseExtras', 'ngCookies'])
+.config(['$stateProvider', '$urlRouterProvider', '$httpProvider', '$provide', 'URLServiceProvider', function($stateProvider, $urlRouterProvider, $httpProvider, $provide, URLServiceProvider) {
+    // override uibTypeaheadPopup functionality
+    $provide.decorator('uibTypeaheadPopupDirective', ['$delegate', function($delegate) {
+        var originalLinkFn = $delegate[0].link;
+        $delegate[0].compile = function(tElem, tAttr) {
+            return function newLinkFn(scope, elem, attr) {
+                // fire the originalLinkFn
+                originalLinkFn.apply($delegate[0], arguments);
+                scope.selectActive = function(matchIdx) {
+                    // added behavior
+                    elem.children().removeClass('active');
+                    // default behavior
+                    scope.active = matchIdx;
+                };
+            };
+        };
+        // get rid of the old link function since we return a link function in compile
+        delete $delegate[0].link;
+        return $delegate;
+    }]);
+
     $urlRouterProvider.rule(function ($injector, $location) {
-        // determine if the url is older 2.0 format (will not have a workspace)
-        if ($location.url().indexOf('/workspaces') === -1)
-        {
-            var locationPath = 'workspaces/master' + $location.url();
+        var $state = $injector.get('$state');
+        var locationPath = $location.url();
+        if (locationPath.indexOf('full%23') > 0)
+            locationPath = locationPath.replace('full%23', 'full#');
+        if (locationPath[0] !== '/')
+            locationPath = '/' + locationPath;
+        if (locationPath[locationPath.length-1] == '/')
+            locationPath = locationPath.substring(0, locationPath.length-1);
 
-            var queryParams = '';
-            var pathArr = locationPath.split('/');
-
-            // determine if this came from docweb.html or ve.html, is there a product?
-            if (locationPath.indexOf('/products/') !== -1) {
-
-                // replace products with documents
-                locationPath = locationPath.replace('/products/', '/documents/');
-                locationPath = locationPath.replace('/view/', '/views/');
-                locationPath = locationPath.replace('/all', '/full');
-
-                // if there is a view, there should be a time in the url prior
-                pathArr = locationPath.split('/');
-
-                // get the time param and remove it from the array
-                var time = pathArr[6]; 
-                pathArr.splice(6,1);
-
-                // add time as query param if it is not latest
-                if (time && time !== 'latest') {
-                    queryParams += 'time=' + time;
-                }
-
+        // if loading 'full' route with an anchor id, switch to views route instead
+        if ( $state.current.name === '' || $state.current.name === 'login.redirect' ) {
+            var string = '/full#';
+            var hash = $location.hash();
+            var index = locationPath.indexOf(string);
+            if ( index !== -1 && hash && !hash.endsWith('_pei')) {
+                locationPath = locationPath.substr(0, index) + '/views/' + hash;
             }
-
-            // if there is a config, remove it and add it as a tag query param
-            var idxOfTag = pathArr.indexOf('config');    
-            if (idxOfTag !== -1) {
-                var tag = pathArr[idxOfTag+1];
-                queryParams += 'tag=' + tag;
-                pathArr.splice(idxOfTag, 2);
-                var idxOfSite = pathArr.indexOf('sites'); //redirect old config page to tag landing page
-                if (idxOfSite !== -1)
-                    pathArr.splice(idxOfSite, 2);
-            }
-
-            locationPath = pathArr.join('/');
-
-
-            if (queryParams !== '') {
-                locationPath += '?' + queryParams;
-            }
-
-            $location.url(locationPath);
         }
-
+        if (locationPath !== $location.url())
+            $location.url(locationPath);
     });
 
+    var mmsHost = window.location.protocol + '//' + window.location.host;
+    URLServiceProvider.setMmsUrl(mmsHost);
+    //URLServiceProvider.setMmsUrl('https://opencae-uat.jpl.nasa.gov');
+
+    $httpProvider.defaults.withCredentials = true;
+// Check if user is logged in, if so redirect to select page otherwise go to login if the url isn't mapped
+    $urlRouterProvider.otherwise(function($injector, $location) {
+        var $rootScope = $injector.get('$rootScope');
+        var $state = $injector.get('$state');
+        var checkLogin = $injector.get('AuthService').checkLogin();
+        if (checkLogin) {
+            if ($location.url().includes('workspace')) {
+                $rootScope.redirect_from_old_site = true;
+                $rootScope.crush_url = $location.path();
+                $state.go('login.redirect');
+            } else {
+                $rootScope.redirect_from_old_site = false;
+                $state.go('login.select');
+            }
+        } else {
+            $state.go('login');
+        }
+    });
+
+
     $stateProvider
-    .state('workspaces', {
-        url: '/workspaces',
-        resolve: {
-            workspaces: function(WorkspaceService) {
-                return WorkspaceService.getWorkspaces();
-            },
-            workspace: function () {
-                return 'master';
-            },
-            workspaceObj: function (WorkspaceService, workspace) {
-                // TODO; replace workspace with workspaceObj, but first all controllers
-                // need to be adapted to handle workspace as an object and not a string
-                return WorkspaceService.getWorkspace(workspace);
-            },  
-            tags: function(ConfigService, workspace) {
-                return ConfigService.getConfigs(workspace, false);
-            },
-            tag: function ($stateParams, ConfigService, workspace) {
-                return { name: 'latest', timestamp: 'latest' };
-            },  
-            sites: function(SiteService) {                 
-               return SiteService.getSites();
-            },
-            site: function(SiteService) {
-                return SiteService.getSite('no_site');
-            },
-            document : function(ElementService, workspace, time, growl) {
-                return null;
-            },
-            views: function() {
-                return null;
-            },
-            view: function() {
-                return null;
-            },
-            viewElements: function(ViewService, workspace, document, time) {
-                if (document === null) 
-                    return null;
-                return ViewService.getViewElements(document.sysmlid, false, workspace, time);
-            },   
-            time: function(tag) {
-                return tag.timestamp;
-            },
-            configSnapshots: function(ConfigService, workspace, tag) {
-                return [];
-            },
-            snapshots: function() {
-                return [];        
-            },
-            snapshot: function() {
-                return null;
-            },
-            docFilter: function() {
-                return null;
-            }
-        },
+    .state('login', {
+        url: '/login',
+        resolve: { },
         views: {
-            'menu': {
-                template: '<mms-nav mms-title="Model Manager" mms-ws="{{workspace}}" mms-config="tag"></mms-nav>',
-                controller: function ($scope, $rootScope, workspace, tag) {
-                    $scope.workspace = workspace;
-                    $scope.tag = tag;
-                    $rootScope.mms_title = 'Model Manager';
-                }
-            },
-            'pane-left': {
-                templateUrl: 'partials/mms/pane-left.html',
-                controller: 'TreeCtrl'
-            },
-            'pane-center': {
-                templateUrl: 'partials/mms/pane-center.html',
-                controller: 'ViewCtrl'
-            },
-            'pane-right': {
-                templateUrl: 'partials/mms/pane-right.html',
-                controller: 'ToolCtrl'
-            },
-            'toolbar-right': {
-                template: '<mms-toolbar buttons="buttons" on-click="onClick(button)" mms-tb-api="tbApi"></mms-toolbar>',
-                controller: 'ToolbarCtrl'
-            } 
-        }        
-    })
-    .state('workspace', {
-        parent: 'workspaces',
-        url: '/:workspace?tag',
-        resolve: {
-            workspace: function ($stateParams) {
-                return $stateParams.workspace;
-            },
-            workspaceObj: function (WorkspaceService, workspace) {
-                return WorkspaceService.getWorkspace(workspace);
-            },
-            sites: function(SiteService, time) {                 
-                if (time === 'latest')
-                    return SiteService.getSites();
-                return SiteService.getSites(time);
-            },
-            site: function(SiteService) {
-                return SiteService.getSite('no_site');
-            },
-            document : function(ElementService, workspace, time, growl, workspaceObj) {
-            
-                // This is a short-term work-around -- all this should be done the back-end MMS in the future
-                var wsCoverDocId = 'master_cover';
-
-                return ElementService.getElement(wsCoverDocId, false, workspace, time)
-                .then(function(data) {
-                    return data;
-                }, function(reason) {
-
-                    // if it is an error, other than a 404 (element not found) then stop and return
-                    if (reason.status !== 404 || time !== 'latest') return null;
-
-                    var doc = {
-                        specialization: {type: "View"},
-                        name: 'Workspace ' + workspaceObj.name + ' Cover Page',
-                        documentation: ''
+            'login@': {
+                templateUrl: 'partials/mms/login.html',
+                controller: ['$scope', '$rootScope', '$state', 'AuthService', 'growl', function ($scope, $rootScope, $state, AuthService, growl) {
+                    $scope.credentials = {
+                      username: '',
+                      password: ''
                     };
-                    doc.sysmlid = wsCoverDocId;
-                    doc.specialization.contains = [
-                        {
-                            'type': 'Paragraph',
-                            'sourceType': 'reference',
-                            'source': wsCoverDocId,
-                            'sourceProperty': 'documentation'
-                        }
-                    ];
-                    doc.specialization.allowedElements = [wsCoverDocId];
-                    doc.specialization.displayedElements = [wsCoverDocId];
-                    doc.specialization.childrenViews = [];
-
-                    return ElementService.createElement(doc, workspace, null)
-                    .then(function(data) {
-                        return data;
-                    }, function(reason) {
-                        return null;
-                    });
-
-                });
-            },
-            docFilter: function(ElementService, workspace, time, document) {
-                return ElementService.getElement("master_filter", false, workspace, time)
-                .then(function(data) {
-                    return data;
-                }, function(reason) {
-                    if (reason.status !== 404 || time !== 'latest') return null;
-                    var siteDocs = {
-                        specialization: {type: "Element"},
-                        name: 'Filtered Docs',
-                        documentation: '{}'
-                    };
-                    siteDocs.sysmlid = "master_filter";
-                    return ElementService.createElement(siteDocs, workspace, null)
-                    .then(function(data) {
-                        return data;
-                    }, function(reason) {
-                        return null;
-                    });
-                });
-            },
-            views: function(ViewService, workspace, document, time) {
-                return [];
-            },
-            viewElements: function(ViewService, workspace, document, time) {
-                if (document === null) 
-                    return [];
-                return ViewService.getViewElements(document.sysmlid, false, workspace, time);
-            },    
-            view: function(ViewService, workspace, document, time) {
-                if (document === null) 
-                    return null;
-                return ViewService.getView(document.sysmlid, false, workspace, time);
-            },
-            tags: function(ConfigService, workspace) {
-                return ConfigService.getConfigs(workspace, false);
-            },
-            tag: function ($stateParams, ConfigService, workspace) {
-                if ($stateParams.tag === undefined || $stateParams.tag === 'latest')
-                    return { name: 'latest', timestamp: 'latest' };
-                return ConfigService.getConfig($stateParams.tag, workspace, false);
-            },        
-            configSnapshots: function(ConfigService, workspace, tag) {
-                if (tag.timestamp === 'latest')
-                    return [];
-                return ConfigService.getConfigSnapshots(tag.id, workspace, false);
-            },
-            time: function(tag) {
-                return tag.timestamp;
-            }
-        },
-        views: {
-            'menu@': {
-                template: '<mms-nav mms-title="Model Manager" mms-ws="{{workspace}}" mms-config="tag"></mms-nav>',
-                controller: function ($scope, $rootScope, workspace, tag) {
-                    $scope.workspace = workspace;
-                    $scope.tag = tag;
-                    $rootScope.mms_title = 'Model Manager';
-                }
-            },
-            'pane-center@': {
-                templateUrl: 'partials/mms/pane-center.html',
-                controller: 'ViewCtrl'
-            },
-            'pane-right@': {
-                templateUrl: 'partials/mms/pane-right.html',
-                controller: 'ToolCtrl'
-            },
-            'toolbar-right@': {
-                template: '<mms-toolbar buttons="buttons" on-click="onClick(button)" mms-tb-api="tbApi"></mms-toolbar>',
-                controller: 'ToolbarCtrl'
-            }    
-        }
-    })
-    .state('workspace.sites', {
-        url: '/sites',
-        resolve: {
-        },
-        parent: 'workspace',
-        views: {
-            'menu@': {
-                template: '<mms-nav mms-title="Portal" mms-ws="{{workspace}}" mms-site="site" mms-config="tag"></mms-nav>',
-                controller: function ($scope, $rootScope, workspace, site, tag, workspaceObj) {
-                    $scope.workspace = workspace;
-                    $scope.tag = tag;
-                    $scope.site = site;
-                    $rootScope.mms_title = 'Portal: '+workspaceObj.name;
-                }
-            },
-            'pane-left@': {
-                templateUrl: 'partials/mms/pane-left.html',
-                controller: 'TreeCtrl'
-            },
-            'pane-center@': {
-                templateUrl: 'partials/mms/pane-center.html',
-                controller: 'ViewCtrl'
-            }, 
-            'toolbar-right@': {
-                template: '<mms-toolbar buttons="buttons" on-click="onClick(button)" mms-tb-api="tbApi"></mms-toolbar>',
-                controller: 'ToolbarCtrl'
-            }
-        }  
-    })
-    .state('workspace.site', {
-        url: '/:site',
-        parent: 'workspace.sites',
-        resolve: {
-            site: function($stateParams, SiteService) {
-                return SiteService.getSite($stateParams.site);
-            },
-            document : function($stateParams, ElementService, workspace, site, time, growl) {
-                var siteCoverDocId;
-                if ($stateParams.site === 'no_site')
-                    return null;
-                    //siteCoverDocId = 'master_cover';
-                else
-                    siteCoverDocId = site.sysmlid + '_cover';
-
-                return ElementService.getElement(siteCoverDocId, false, workspace, time)
-                .then(function(data) {
-                    return data;
-                }, function(reason) {
-
-                    // if it is an error, other than a 404 (element not found) then stop and return
-                    if (reason.status !== 404 || time !== 'latest') return null;
-                    
-                    // if it is a tag look-up, then don't create element
-                    if (time !== 'latest') 
-                        return null;
-
-                    var doc = {
-                        specialization: {type: "View"},
-                        name: site.name + ' Cover Page',
-                        documentation: '<mms-site-docs data-mms-site="' + site.sysmlid + '">[cf:site docs]</mms-site-docs>'
-                    };
-                    doc.sysmlid = siteCoverDocId;
-                    doc.specialization.contains = [
-                        {
-                            'type': 'Paragraph',
-                            'sourceType': 'reference',
-                            'source': siteCoverDocId,
-                            'sourceProperty': 'documentation'
-                        }
-                    ];
-                    doc.specialization.allowedElements = [siteCoverDocId];
-                    doc.specialization.displayedElements = [siteCoverDocId];
-                    doc.specialization.childrenViews = [];
-
-                    return ElementService.createElement(doc, workspace, site.sysmlid)
-                    .then(function(data) {
-                        return data;
-                    }, function(reason) {
-                        return null;
-                    });
-                });
-            },
-            views: function(ViewService, workspace, document, time) {
-                if (document === null) 
-                    return null;
-                return ViewService.getDocumentViews(document.sysmlid, false, workspace, time, true);
-            },
-            viewElements: function(ViewService, workspace, document, time) {
-                if (document === null) 
-                    return null;
-                return ViewService.getViewElements(document.sysmlid, false, workspace, time);
-            },    
-            view: function(ViewService, workspace, document, time) {
-                if (document === null) 
-                    return null;
-                return ViewService.getView(document.sysmlid, false, workspace, time);
-            }
-        },
-        views: {
-            'menu@': {
-                template: '<mms-nav mms-title="Portal" mms-ws="{{workspace}}" mms-site="site" mms-config="tag"></mms-nav>',
-                controller: function ($scope, $rootScope, workspace, site, tag, workspaceObj) {
-                    $scope.workspace = workspace;
-                    $scope.tag = tag;
-                    $scope.site = site;
-                    $rootScope.mms_title = 'Portal: '+workspaceObj.name;
-                }
-            },
-            'pane-center@': {
-                templateUrl: 'partials/mms/pane-center.html',
-                controller: 'ViewCtrl'
-            }, 
-            'toolbar-right@': {
-                template: '<mms-toolbar buttons="buttons" on-click="onClick(button)" mms-tb-api="tbApi"></mms-toolbar>',
-                controller: 'ToolbarCtrl'
-            }                    
-        }
-    })
-    .state('workspace.site.documentpreview', {
-        url: '/document/:document',
-        resolve: {
-            document: function($stateParams, ElementService, workspace, time) {
-                return ElementService.getElement($stateParams.document, false, workspace, time);
-            },
-            views: function(ViewService, workspace, document, time) {
-                if (document === null) 
-                    return null;
-                return ViewService.getDocumentViews(document.sysmlid, false, workspace, time, true);
-            },
-            viewElements: function(ViewService, workspace, document, time) {
-                if (document === null) 
-                    return null;
-                return ViewService.getViewElements(document.sysmlid, false, workspace, time);
-            },    
-            view: function(ViewService, workspace, document, time) {
-                if (document === null) 
-                    return null;
-                return ViewService.getView(document.sysmlid, false, workspace, time);
-            },
-            snapshot: function(configSnapshots, document) {
-                var docid = document.sysmlid;
-                var found = null;
-                configSnapshots.forEach(function(snapshot) {
-                    if (docid === snapshot.sysmlid)
-                        found = snapshot;
-                });
-                return found; 
-            }
-        },
-        views: {
-            'pane-center@': {
-                templateUrl: 'partials/mms/pane-center.html',
-                controller: 'ViewCtrl'
-            }
-        }
-    })
-    .state('workspace.site.document', {
-        url: '/documents/:document?time',
-        resolve: {
-            document: function($stateParams, ElementService, time) {
-                return ElementService.getElement($stateParams.document, false, $stateParams.workspace, time);
-            },
-            views: function($stateParams, ViewService, document, time) {
-                if (document.specialization.type !== 'Product')
-                    return [];
-                return ViewService.getDocumentViews($stateParams.document, false, $stateParams.workspace, time, true);
-            },
-            viewElements: function($stateParams, ViewService, time) {
-                return ViewService.getViewElements($stateParams.document, false, $stateParams.workspace, time);
-            },
-            view: function($stateParams, ViewService, viewElements, time) {
-                return ViewService.getView($stateParams.document, false, $stateParams.workspace, time);
-            },
-            snapshots: function(ConfigService, workspace, site, document) {
-                if (document.specialization.type !== 'Product')
-                    return [];
-                return ConfigService.getProductSnapshots(document.sysmlid, site.sysmlid, workspace);
-            },
-            snapshot: function(configSnapshots, document) {
-                var docid = document.sysmlid;
-                var found = null;
-                configSnapshots.forEach(function(snapshot) {
-                    if (docid === snapshot.sysmlid)
-                        found = snapshot;
-                });
-                return found; 
-            },
-            tag: function ($stateParams, ConfigService, workspace, snapshots) {
-                if ($stateParams.tag === undefined)
-                {
-                    if ($stateParams.time !== undefined && $stateParams.time !== 'latest') {
-                        
-                        var snapshotFound = false;
-                        var snapshotPromise;
-                        // if time is defined, then do a reverse look-up from the
-                        // product snapshots to determine if there is a match tag
-                        snapshots.forEach(function(snapshot) {
-                            if (snapshot.created === $stateParams.time) {
-                                // product snapshot found based on time, 
-                                // next see if there is a configuration for the snapshot
-                                if (snapshot.configurations && snapshot.configurations.length > 0) {
-                                    // there may be 0 or more, if there is more than 1, 
-                                    // base the configuration tag on the first one
-                                    snapshotFound = true;
-
-                                    snapshotPromise = ConfigService.getConfig(snapshot.configurations[0].id, workspace, false);
-                                }
+                    $rootScope.ve_title = 'Login';
+                    $scope.pageTitle = 'View Editor';
+                    $scope.spin = false;
+                    $scope.login = function (credentials) {
+                        $scope.spin = true;
+                        var credentialsJSON = {"username":credentials.username, "password":credentials.password};
+                        AuthService.getAuthorized(credentialsJSON)
+                        .then(function(user) {
+                            if ($rootScope.ve_redirect) {
+                                var toState = $rootScope.ve_redirect.toState;
+                                var toParams = $rootScope.ve_redirect.toParams;
+                                $state.go(toState, toParams);
+                            } else {
+                                $state.go('login.select', {fromLogin: true});
                             }
+                        }, function (reason) {
+                            $scope.spin = false;
+                            growl.error(reason.message);
                         });
-                        if (snapshotFound)
-                            return snapshotPromise;
-                        else 
-                            return { name: 'latest', timestamp: 'latest' };
-                    } else {
-                        return { name: 'latest', timestamp: 'latest' };
-                    }
-                } else if ($stateParams.tag === 'latest') {
-                    return { name: 'latest', timestamp: 'latest' };
-                } else {
-                    return ConfigService.getConfig($stateParams.tag, workspace, false);
-                }
-            },        
-            configSnapshots: function(ConfigService, workspace, tag) {
-                if (tag.timestamp === 'latest')
-                    return [];
-                return ConfigService.getConfigSnapshots(tag.id, workspace, false);
-            },
-            time: function($stateParams, ConfigService, workspace) {
-                if ($stateParams.tag !== undefined) {
-                    return ConfigService.getConfig($stateParams.tag, workspace, false).then(function(tag) {
-                        return tag.timestamp;
-                    }); 
-                }
-                else if ($stateParams.time !== undefined)
-                    return $stateParams.time;
-                else
-                    return "latest";
-            },
-            docFilter: function($stateParams, ElementService, workspace, site, time, growl) {
-                //need to redefine here since time is redefined
-                return ElementService.getElement("master_filter", false, workspace, time)
-                .then(function(data) {
-                    return data;
-                }, function(reason) {
-                    return null;
+                    };
+                }]
+            }
+        }
+    })
+    .state('login.redirect', {
+        url: '/redirect',
+        resolve: {
+            ticket: ['$window', 'URLService', 'AuthService', '$q', '$cookies', 'ApplicationService', function($window, URLService, AuthService, $q, $cookies, ApplicationService) {
+                var deferred = $q.defer();
+                AuthService.checkLogin().then(function(data) {
+                    ApplicationService.setUserName(data);
+                    URLService.setTicket($window.localStorage.getItem('ticket'));
+                    deferred.resolve($window.localStorage.getItem('ticket'));
+                    $cookies.put('com.tomsawyer.web.license.user', data, {path: '/'});
+                }, function(rejection) {
+                    deferred.reject(rejection);
                 });
-            },
+                return deferred.promise;
+            }]
         },
         views: {
-            'menu@': {
-                template: '<mms-nav mms-title="View Editor" mms-ws="{{workspace}}" mms-site="site" mms-doc="document" mms-config="tag" mms-snapshot-tag="{{snapshotTag}}" mms-show-tag="{{showTag}}"></mms-nav>',
-                controller: function ($scope, $filter, $rootScope, workspace, site, document, tag, snapshots, time, docFilter) {
-                    $scope.workspace = workspace;
-                    $scope.tag = tag;
-                    $scope.site = site;
-                    $scope.document = document;
+            'login@': {
+                templateUrl: 'partials/mms/redirect.html',
+                controller: 'RedirectCtrl'
+            }
+        }
+    })
+    .state('login.select', {
+        url: '/select?fromLogin',
+        resolve: {
+            ticket: ['$window', 'URLService', 'AuthService', '$q', 'ApplicationService', function($window, URLService, AuthService, $q, ApplicationService) {
+                var deferred = $q.defer();
+                AuthService.checkLogin().then(function(data) {
+                    ApplicationService.setUserName(data);
+                    URLService.setTicket($window.localStorage.getItem('ticket'));
+                    deferred.resolve($window.localStorage.getItem('ticket'));
+                }, function(rejection) {
+                    deferred.reject(rejection);
+                });
+                return deferred.promise;
+            }],
+            orgObs: ['$stateParams', 'ProjectService', 'ticket', function($stateParams, ProjectService, ticket) {
+                return ProjectService.getOrgs();
+            }]
+        },
+        views: {
+            'login@': {
+                templateUrl: 'partials/mms/select.html',
+                controller: ['$scope', '$rootScope', '$state', '$stateParams', 'orgObs', 'ProjectService', 'AuthService', 'growl', '$localStorage', function($scope, $rootScope, $state, $stateParams, orgObs, ProjectService, AuthService, growl, $localStorage) {
+                    $rootScope.ve_title = 'Projects';
+                    $scope.pageTitle = 'View Editor';
+                    $scope.fromLogin = $stateParams.fromLogin;
+                    $localStorage.$default({org: orgObs[0]});
+                    $scope.spin = false;
+                    $scope.orgs = orgObs;
+                    var orgId, projectId;
+                    $scope.selectOrg = function(org) {
+                        if (org) {
+                            $localStorage.org = org;
+                            orgId = org.id;
+                            $localStorage.org.orgName = org.name;
+                            $scope.selectedOrg = $localStorage.org.name;
+                            $scope.selectedProject = ""; // default here?
+                            ProjectService.getProjects(orgId).then(function(data){
+                                $scope.projects = data;
+                                if (data.length > 0) {
+                                    if($localStorage.project && checkForProject(data, $localStorage.project) === 1){
+                                        $scope.selectedProject = $localStorage.project.name;
+                                        projectId = $localStorage.project.id;
+                                    }else{
+                                        $scope.selectProject(data[0]);
+                                    }
+                                }
+                            });
+                        }
+                    };
+                    $scope.selectProject = function(project) {
+                        if (project) {
+                            $localStorage.project = project;
+                            $scope.selectedProject = $localStorage.project.name;
+                            projectId = $localStorage.project.id;
+                        }
+                    };
+                    if ($localStorage.org) {
+                        $scope.selectOrg($localStorage.org);
+                    }
+                    var checkForProject = function(projectArray, project) {
+                        for (var i = 0; i < projectArray.length; i++) {
+                            if(projectArray[i].id === project.id){
+                                return 1;
+                            }
+                        }
+                        return 0;
+                    };
 
-                    $scope.showTag = true;
-                    $rootScope.mms_title = 'View Editor: '+document.name;
-                    var filtered = {};
-                    if (docFilter)
-                        filtered = JSON.parse(docFilter.documentation);
-
-                    var tagStr = '';
-                    if (time !== 'latest') {
-                        snapshots.forEach(function(snapshot) {
-                            if (filtered[document.sysmlid])
-                                return;
-                            if (time === snapshot.created && snapshot.configurations && snapshot.configurations.length > 0)
-                                snapshot.configurations.forEach(function(config) {
-                                    tagStr += '( <i class="fa fa-tag"></i> ' + config.name + ' ) ';
-                                    $scope.tag = config;
-                                });
+                    $scope.continue = function() {
+                        if (orgId && projectId) {
+                            $scope.spin = true;
+                            $rootScope.redirect_from_old_site = false;
+                            $state.go('project.ref', {orgId: orgId, projectId: projectId, refId: 'master'}).then(function(data) {
+                            }, function(reject) {
+                                $scope.spin = false;
+                            });
+                        }
+                    };
+                    $scope.logout = function() {
+                        AuthService.logout().then(function() {
+                            $state.go('login');
+                        }, function() {
+                            growl.error('You were not logged out');
                         });
-                        tagStr += '( <i class="fa fa-camera"></i> ' + $filter('date')(time, 'M/d/yy h:mm a') + ' )';
-                        if (filtered[document.sysmlid])
-                            $scope.showTag = false;
-                        $scope.snapshotTag = ' ' + tagStr;
-                    }                                        
+                    };
+                }]
+            }
+        }
+    })
+    .state('project', { //TODO this will be the ui to diff and merge and manage refs
+        url: '/projects/:projectId',
+        resolve: {
+            ticket: ['$window', 'URLService', 'AuthService', '$q', 'ApplicationService', '$cookies', function($window, URLService, AuthService, $q, ApplicationService, $cookies) {
+                var deferred = $q.defer();
+                AuthService.checkLogin().then(function(data) {
+                    ApplicationService.setUserName(data);
+                    URLService.setTicket($window.localStorage.getItem('ticket'));
+                    deferred.resolve($window.localStorage.getItem('ticket'));
+                    $cookies.put('com.tomsawyer.web.license.user', data, {path: '/'});
+                }, function(rejection) {
+                    deferred.reject(rejection);
+                });
+                return deferred.promise;
+            }],
+            //orgObs: ['$stateParams', 'ProjectService', 'ticket', function($stateParams, ProjectService, ticket) {
+            //    return ProjectService.getOrgs();
+            //}],
+            projectOb: ['$stateParams', 'ProjectService', 'ticket', function($stateParams, ProjectService, ticket) {
+                return ProjectService.getProject($stateParams.projectId);
+            }],
+            projectObs: ['$stateParams', 'ProjectService', 'ticket', 'projectOb', function($stateParams, ProjectService, ticket, projectOb) {
+                return ProjectService.getProjects(projectOb.orgId);
+            }],
+            orgOb: ['ProjectService', 'projectOb', 'ticket', function(ProjectService, projectOb, ticket) {
+                return ProjectService.getOrg(projectOb.orgId);
+            }],
+            refObs: ['$stateParams', 'ProjectService', 'ticket', function($stateParams, ProjectService, ticket) {
+                return ProjectService.getRefs($stateParams.projectId);
+            }],
+            tagObs: ['refObs', function(refObs) {
+                var ret = [];
+                for (var i = 0; i < refObs.length; i++) {
+                    if (refObs[i].type === "Tag")
+                        ret.push(refObs[i]);
                 }
+                return ret;
+            }],
+            branchObs: ['refObs', function(refObs) {
+                var ret = [];
+                for (var i = 0; i < refObs.length; i++) {
+                    if (refObs[i].type === "Branch")
+                        ret.push(refObs[i]);
+                }
+                return ret;
+            }],
+            refOb: function() { return null;},
+            tagOb: function() { return null;},
+            branchOb: function() { return null;},
+            documentOb: function(){ return null;},
+            viewOb: function(){ return null;},
+            search: function(){ return null;}
+        },
+        views: {
+            'nav@': {
+                template: '<ve-nav mms-title="ve_title" mms-org="org" mms-project="project" mms-projects="projects" mms-ref="ref" mms-branch="branch" mms-branches="branches" mms-tag="tag" mms-tags="tags" mms-search="search"></ve-nav>',
+                controller: ['$scope', '$rootScope', 'orgOb', 'projectOb', 'projectObs', 'refOb', 'branchOb', 'branchObs', 'tagOb', 'tagObs', 'search', function ($scope, $rootScope, orgOb, projectOb, projectObs, refOb, branchOb, branchObs, tagOb, tagObs, search) {
+                    $rootScope.ve_title = orgOb.name;
+                    $scope.org = orgOb;
+                    //$scope.orgs = orgObs;
+                    $scope.project = projectOb;
+                    $scope.projects = projectObs;
+                    $scope.ref = refOb;
+                    $scope.branch = branchOb;
+                    $scope.branches = branchObs;
+                    $scope.tag = tagOb;
+                    $scope.tags = tagObs;
+                    $scope.search = search;
+                }]
+            },
+            'menu@': {
+                template: '<ve-menu mms-org="org" mms-project="project" mms-projects="projects" mms-ref="ref" mms-refs="refs" mms-branch="branch" mms-branches="branches" mms-tag="tag" mms-tags="tags"></ve-menu>',
+                controller:['$scope', '$rootScope', 'orgOb', 'projectOb', 'projectObs', 'refOb', 'refObs', 'branchOb', 'branchObs', 'tagOb', 'tagObs', function ($scope, $rootScope, orgOb, projectOb, projectObs, refOb, refObs, branchOb, branchObs, tagOb, tagObs) {
+                    $rootScope.ve_title = projectOb.name;
+                    $scope.org = orgOb;
+                    $scope.project = projectOb;
+                    $scope.projects = projectObs;
+                    $scope.ref = refOb;
+                    $scope.refs = refObs;
+                    $scope.branch = branchOb;
+                    $scope.branches = branchObs;
+                    $scope.tag = tagOb;
+                    $scope.tags = tagObs;
+                }]
+            },
+            'manageRefs@': {
+                templateUrl: 'partials/mms/manage-refs.html',
+                controller: 'RefsCtrl'
+            }
+        }
+    })
+    .state('project.ref', { // equivalent to old sites and documents page
+        url: '/:refId?search',
+        resolve: {
+            projectOb: ['$stateParams', 'ProjectService', 'ticket', function($stateParams, ProjectService, ticket) {
+                return ProjectService.getProjectMounts($stateParams.projectId, $stateParams.refId);
+            }],
+            refOb: ['$stateParams', 'ProjectService', 'ticket', function($stateParams, ProjectService, ticket) {
+                return ProjectService.getRef($stateParams.refId, $stateParams.projectId);
+            }],
+            tagOb: ['refOb', function(refOb) {
+                if(refOb.type === "Tag")
+                    return refOb;
+                else {
+                    return [];
+                }
+            }],
+            branchOb: ['refOb', function(refOb) {
+                if(refOb.type === "Branch")
+                    return refOb;
+                else {
+                    return [];
+                }
+            }],
+            groupObs: ['$stateParams', 'ProjectService', 'ticket', function($stateParams, ProjectService, ticket) {
+                return ProjectService.getGroups($stateParams.projectId, $stateParams.refId);
+            }],
+            groupOb: function(){ return null;},
+            documentOb: ['$stateParams', '$q', 'ElementService', 'ViewService', 'refOb', 'projectOb', 'ticket', function($stateParams, $q, ElementService, ViewService, refOb, projectOb, ticket) {
+                var deferred = $q.defer();
+                var eid = $stateParams.projectId + '_cover';
+                ElementService.getElement({
+                    projectId: $stateParams.projectId,
+                    refId: $stateParams.refId,
+                    extended: true,
+                    elementId: eid
+                }, 2).then(function(data) {
+                    deferred.resolve(data);
+                }, function(reason) {
+                    if (reason.status === 404) {
+                        if (refOb.type === 'Tag') {
+                            deferred.resolve(null);
+                        } else {
+                            ViewService.createView({
+                                _projectId: $stateParams.projectId,
+                                _refId: $stateParams.refId,
+                                id: 'holding_bin_' + $stateParams.projectId
+                            },{
+                                viewName: projectOb.name + ' Cover Page',
+                                viewId: eid
+                            }, 2).then(function(data) {
+                                deferred.resolve(data);
+                            }, function(reason2) {
+                                deferred.resolve(null);
+                            });
+                        }
+                    } else if (reason.status === 410) { //resurrect
+                        var name = projectOb.name + ' Cover Page ';
+                        try {
+                            name = reason.data.deleted[0].name + ' ';
+                        } catch(e) {}
+                        ElementService.updateElements([
+                            {
+                                _projectId: $stateParams.projectId,
+                                _refId: $stateParams.refId,
+                                id: eid,
+                                name: name
+                            },
+                            {
+                                _projectId: $stateParams.projectId,
+                                _refId: $stateParams.refId,
+                                id: eid + "_asi",
+                                name: ' '
+                            }
+                        ]).then(function(data) {
+                            var resolved = false;
+                            if (data.length > 0) {
+                                data.forEach(function(e) {
+                                    if (e.id == eid) {
+                                        deferred.resolve(e);
+                                        resolved = true;
+                                    }
+                                });
+                            }
+                            if (!resolved) {
+                                deferred.resolve(null);
+                            }
+                        }, function(reason2) {
+                            deferred.resolve(null);
+                        });
+                    } else {
+                        deferred.resolve(null); //let user get into project
+                    }
+                });
+                return deferred.promise;
+            }],
+            viewOb: ['documentOb', function(documentOb) {
+                return documentOb;
+            }],
+            search: ['$stateParams', 'ElementService', 'ticket', function($stateParams, ElementService, ticket) {
+                if ($stateParams.search === undefined) {
+                    return null;
+                }
+                return $stateParams.search;
+            }],
+            docMeta: [function(){
+                return {};
+            }]
+        },
+        views: {
+            'nav@': {
+                template: '<ve-nav mms-title="ve_title" mms-org="org" mms-project="project" mms-projects="projects" mms-ref="ref" mms-branch="branch" mms-branches="branches" mms-tag="tag" mms-tags="tags" mms-search="search"></ve-nav>',
+                controller: ['$scope', '$rootScope', 'orgOb', 'projectOb', 'projectObs', 'refOb', 'branchOb', 'branchObs', 'tagOb', 'tagObs', 'search', function ($scope, $rootScope, orgOb, projectOb, projectObs, refOb, branchOb, branchObs, tagOb, tagObs, search) {
+                    $rootScope.ve_title = orgOb.name;
+                    $scope.org = orgOb;
+                    //$scope.orgs = orgObs;
+                    $scope.project = projectOb;
+                    $scope.projects = projectObs;
+                    $scope.ref = refOb;
+                    $scope.branch = branchOb;
+                    $scope.branches = branchObs;
+                    $scope.tag = tagOb;
+                    $scope.tags = tagObs;
+                    $scope.search = search;
+                }]
+            },
+            'menu@': {
+                template: '<ve-menu mms-org="org" mms-ref="ref" mms-refs="refs" mms-groups="groups" mms-project="project" mms-projects="projects" mms-branch="branch" mms-branches="branches" mms-tag="tag" mms-tags="tags"></ve-menu>',
+                controller: ['$scope', '$rootScope', 'orgOb', 'groupObs', 'projectOb', 'projectObs', 'refOb', 'refObs', 'branchOb', 'branchObs', 'tagOb', 'tagObs', function ($scope, $rootScope, orgOb, groupObs, projectOb, projectObs, refOb, refObs, branchOb, branchObs, tagOb, tagObs) {
+                    $rootScope.ve_title = projectOb.name;
+                    $scope.org = orgOb;
+                    $scope.groups = groupObs;
+                    $scope.project = projectOb;
+                    $scope.projects = projectObs;
+                    $scope.ref = refOb;
+                    $scope.refs = refObs;
+                    $scope.branch = branchOb;
+                    $scope.branches = branchObs;
+                    $scope.tag = tagOb;
+                    $scope.tags = tagObs;
+                }]
             },
             'pane-left@': {
                 templateUrl: 'partials/mms/pane-left.html',
                 controller: 'TreeCtrl'
-            },          
+            },
             'pane-center@': {
                 templateUrl: 'partials/mms/pane-center.html',
                 controller: 'ViewCtrl'
@@ -568,77 +466,288 @@ angular.module('mmsApp', ['mms', 'mms.directives', 'fa.directive.borderLayout', 
                 template: '<mms-toolbar buttons="buttons" on-click="onClick(button)" mms-tb-api="tbApi"></mms-toolbar>',
                 controller: 'ToolbarCtrl'
             }
-         }
+        }
     })
-    .state('workspace.site.document.order', {
+    .state('project.ref.groupReorder', {
+        url: '/group-reorder',
+        resolve: {
+            documentObs: ['ViewService', '$stateParams', 'ticket', function(ViewService, $stateParams, ticket) {
+                return ViewService.getProjectDocuments({
+                    projectId: $stateParams.projectId,
+                    refId: $stateParams.refId
+                });
+            }]
+        },
+        views: {
+            'pane-center@': {
+                templateUrl: 'partials/mms/reorder-groups.html',
+                controller: 'ReorderGroupCtrl'
+            }
+        }
+    })
+    .state('project.ref.manage', { //not needed right now, for managing mounts
+        url: '/manage'
+    })
+    .state('project.ref.preview', {
+        url: '/document/:documentId',
+        resolve: {
+            documentOb: ['$stateParams', '$q', 'ElementService', 'ViewService', 'refOb', 'ticket', function($stateParams, $q, ElementService, ViewService, refOb, ticket) {
+                var deferred = $q.defer();
+                var eid = $stateParams.documentId;
+                var coverIndex = eid.indexOf('_cover');
+                if (coverIndex > 0) {
+                    var groupId = eid.substring(5, coverIndex);
+                    ElementService.getElement({
+                        projectId: $stateParams.projectId,
+                        refId: $stateParams.refId,
+                        extended: true,
+                        elementId: eid
+                    }, 2).then(function(data) {
+                        deferred.resolve(data);
+                    }, function(reason) {
+                        if (reason.status === 404) {
+                            if (refOb.type === 'Tag') {
+                                deferred.resolve(null);
+                            } else {
+                                var viewDoc = '<mms-group-docs mms-group-id="' + groupId + '">[cf:group docs]</mms-group-docs>';
+                                ElementService.getElement({projectId: $stateParams.projectId, refId: $stateParams.refId, elementId: groupId})
+                                .then(function(groupElement) {
+                                    ViewService.createView({
+                                        _projectId: $stateParams.projectId,
+                                        _refId: $stateParams.refId,
+                                        id: groupId
+                                    },{
+                                        viewName: groupElement.name + ' Cover Page',
+                                        viewId: eid
+                                    }, viewDoc)
+                                    .then(function(data) {
+                                        deferred.resolve(data);
+                                    }, function(reason3) {
+                                        deferred.resolve(null);
+                                    });
+                                }, function(reason2) {
+                                    deferred.resolve(null);
+                                });
+                            }
+                        } else {
+                            deferred.reject(reason);
+                        }
+                    });
+                } else {
+                    ElementService.getElement({
+                        projectId: $stateParams.projectId,
+                        refId: $stateParams.refId,
+                        extended: true,
+                        elementId: $stateParams.documentId
+                    }, 2).then(function(data){
+                        deferred.resolve(data);
+                    }, function(reason) {
+                        deferred.reject(reason);
+                    });
+                }
+                return deferred.promise;
+            }],
+            viewOb: ['documentOb', function(documentOb) {
+                return documentOb;
+            }],
+            groupOb: ['groupObs', 'documentOb', 'ProjectService', 'ticket', function(groupObs, documentOb, ProjectService, ticket) {
+                var group = null;
+                if (documentOb) {
+                    for (var i = 0; i < groupObs.length; i++) {
+                        if (groupObs[i].id == documentOb._groupId) {
+                            group = groupObs[i];
+                            break;
+                        }
+                    }
+                }
+                return group;
+            }]
+        },
+        views: {
+            'menu@': {
+                template: '<ve-menu mms-org="org" mms-ref="ref" mms-refs="refs" mms-group="group" mms-groups="groups" mms-project="project" mms-projects="projects" mms-branch="branch" mms-branches="branches" mms-tag="tag" mms-tags="tags"></ve-menu>',
+                controller: ['$scope', '$rootScope', 'orgOb', 'groupOb', 'groupObs', 'projectOb', 'projectObs', 'refOb', 'refObs', 'branchOb', 'branchObs', 'tagOb', 'tagObs', 'documentOb', function ($scope, $rootScope, orgOb, groupOb, groupObs, projectOb, projectObs, refOb, refObs, branchOb, branchObs, tagOb, tagObs, documentOb) {
+                    $rootScope.ve_title = documentOb.name;
+                    $scope.org = orgOb;
+                    $scope.ref = refOb;
+                    $scope.group = groupOb;
+                    $scope.groups = groupObs;
+                    $scope.project = projectOb;
+                    $scope.projects = projectObs;
+                    $scope.ref = refOb;
+                    $scope.refs = refObs;
+                    $scope.branch = branchOb;
+                    $scope.branches = branchObs;
+                    $scope.tag = tagOb;
+                    $scope.tags = tagObs;
+                }]
+            },
+            'pane-center@': {
+                templateUrl: 'partials/mms/pane-center.html',
+                controller: 'ViewCtrl'
+            },
+            'pane-right@': {
+                templateUrl: 'partials/mms/pane-right.html',
+                controller: 'ToolCtrl'
+            }
+        }
+    })
+    .state('project.ref.document', {
+        url: '/documents/:documentId',
+        resolve: {
+            documentOb: ['$stateParams', 'ElementService', 'ticket', function($stateParams, ElementService, ticket) {
+                return ElementService.getElement({
+                    projectId: $stateParams.projectId,
+                    refId: $stateParams.refId,
+                    extended: true,
+                    elementId: $stateParams.documentId
+                }, 2);
+            }],
+            viewOb: ['documentOb', function(documentOb) {
+                return documentOb;
+            }],
+            groupOb: ['groupObs', 'documentOb', function(groupObs, documentOb) {
+                var group = null;
+                if (documentOb) {
+                    for (var i = 0; i < groupObs.length; i++) {
+                        if (groupObs[i].id == documentOb._groupId) {
+                            group = groupObs[i];
+                            break;
+                        }
+                    }
+                }
+                return group;
+            }],
+            docMeta: ['ViewService', 'documentOb', function(ViewService, documentOb) {
+                return ViewService.getDocMetadata({
+                    projectId: documentOb._projectId,
+                    refId: documentOb._refId,
+                    elementId: documentOb.id
+                });
+            }]
+        },
+        views: {
+            'menu@': {
+                template: '<ve-menu mms-org="org" mms-ref="ref" mms-refs="refs" mms-group="group" mms-groups="groups" mms-project="project" mms-projects="projects" mms-branch="branch" mms-branches="branches" mms-tag="tag" mms-tags="tags" mms-document="document"></ve-menu>',
+                controller: ['$scope', '$rootScope', 'orgOb', 'groupOb', 'groupObs', 'projectOb', 'projectObs', 'refOb', 'refObs', 'branchOb', 'branchObs', 'tagOb', 'tagObs', 'documentOb', function ($scope, $rootScope, orgOb, groupOb, groupObs, projectOb, projectObs, refOb, refObs, branchOb, branchObs, tagOb, tagObs, documentOb) {
+                    $rootScope.ve_title = documentOb.name;
+                    $scope.org = orgOb;
+                    $scope.group = groupOb;
+                    $scope.groups = groupObs;
+                    $scope.project = projectOb;
+                    $scope.projects = projectObs;
+                    $scope.ref = refOb;
+                    $scope.refs = refObs;
+                    $scope.branch = branchOb;
+                    $scope.branches = branchObs;
+                    $scope.tag = tagOb;
+                    $scope.tags = tagObs;
+                    $scope.document = documentOb;
+                }]
+            },
+            'pane-left@': {
+                templateUrl: 'partials/mms/pane-left.html',
+                controller: 'TreeCtrl'
+            },
+            'pane-center@': {
+                templateUrl: 'partials/mms/pane-center.html',
+                controller: 'ViewCtrl'
+            },
+            'pane-right@': {
+                templateUrl: 'partials/mms/pane-right.html',
+                controller: 'ToolCtrl'
+            },
+            'toolbar-right@': {
+                template: '<mms-toolbar buttons="buttons" on-click="onClick(button)" mms-tb-api="tbApi"></mms-toolbar>',
+                controller: 'ToolbarCtrl'
+            }
+        }
+    })
+    .state('project.ref.document.view', {
+        url: '/views/:viewId',
+        resolve: {
+            viewOb: ['$stateParams', 'ElementService', 'ticket', function($stateParams, ElementService, ticket) {
+                return ElementService.getElement({
+                    projectId: $stateParams.projectId,
+                    refId: $stateParams.refId,
+                    elementId: $stateParams.viewId
+                }, 2);
+            }],
+            groupOb: ['groupObs', 'documentOb', function(groupObs, documentOb) {
+                var group = null;
+                if (documentOb) {
+                    for (var i = 0; i < groupObs.length; i++) {
+                        if (groupObs[i].id == documentOb._groupId) {
+                            group = groupObs[i];
+                            break;
+                        }
+                    }
+                }
+                return group;
+            }]
+        },
+        views: {
+            'menu@': {
+                template: '<ve-menu mms-org="org" mms-group="group" mms-groups="groups" mms-project="project" mms-projects="projects" mms-ref="ref" mms-refs="refs" mms-branch="branch" mms-branches="branches" mms-tag="tag" mms-tags="tags" mms-document="document"></ve-menu>',
+                controller: ['$scope', '$rootScope', 'orgOb', 'groupOb', 'groupObs', 'projectOb', 'projectObs', 'refOb', 'refObs', 'branchOb', 'branchObs', 'tagOb', 'tagObs', 'documentOb', function ($scope, $rootScope, orgOb, groupOb, groupObs, projectOb, projectObs, refOb, refObs, branchOb, branchObs, tagOb, tagObs, documentOb) {
+                    $rootScope.ve_title = documentOb.name;
+                    $scope.org = orgOb;
+                    $scope.group = groupOb;
+                    $scope.groups = groupObs;
+                    $scope.project = projectOb;
+                    $scope.projects = projectObs;
+                    $scope.ref = refOb;
+                    $scope.refs = refObs;
+                    $scope.branch = branchOb;
+                    $scope.branches = branchObs;
+                    $scope.tag = tagOb;
+                    $scope.tags = tagObs;
+                    $scope.document = documentOb;
+                }]
+            },
+            'pane-center@': {
+                templateUrl: 'partials/mms/pane-center.html',
+                controller: 'ViewCtrl'
+            }
+        }
+    })
+    .state('project.ref.document.order', {
         url: '/order',
-        views: {      
+        views: {
             'pane-center@': {
                 templateUrl: 'partials/mms/reorder-views.html',
                 controller: 'ReorderCtrl'
             }
         }
     })
-    .state('workspace.site.document.full', {
+    .state('project.ref.document.full', {
         url: '/full',
-        views: {      
+        views: {
             'pane-center@': {
                 templateUrl: 'partials/mms/full-doc.html',
                 controller: 'FullDocCtrl'
             }
         }
-    })
-    .state('workspace.site.document.view', {
-        url: '/views/:view',
-        resolve: {
-            viewElements: function($stateParams, ViewService, time) {
-                if (time === 'latest')
-                    return ViewService.getViewElements($stateParams.view, false, $stateParams.workspace, time);
-                return [];
-            },
-            view: function($stateParams, ViewService, viewElements, time) {
-                return ViewService.getView($stateParams.view, false, $stateParams.workspace, time);
-            }
-        },
-        views: {
-            'pane-center@': {
-                templateUrl: 'partials/mms/pane-center.html',
-                controller: 'ViewCtrl'
-            }
-        }
-    })
-    .state('workspace.diff', {
-        url: '/diff/:source/:sourceTime/:target/:targetTime',
-        resolve: {
-            diff: function($stateParams, WorkspaceService) {
-                return WorkspaceService.diff($stateParams.target, $stateParams.source, $stateParams.targetTime, $stateParams.sourceTime);
-            }
-        },
-        views: {
-            'pane-center@': {
-                templateUrl: 'partials/mms/diff-pane-center.html'
-            },
-            'pane-left@': {
-                templateUrl: 'partials/mms/diff-pane-left.html',
-                controller: 'WorkspaceDiffChangeController'
-            },
-            'pane-right@': {
-                templateUrl: 'partials/mms/diff-pane-right.html',
-                controller: 'WorkspaceDiffTreeController'
-            },
-            'toolbar-right@': {
-                template: '<mms-toolbar buttons="buttons" mms-tb-api="tbApi"></mms-toolbar>',
-                controller: 'ToolbarCtrl'
-            }
-        }
-    })
-    .state('workspace.diff.view', {
-        url: '/element/:elementId',
-        views: {
-            'pane-center@': {
-                templateUrl: 'partials/mms/diff-view-pane-center.html',
-                controller: 'WorkspaceDiffElementViewController'
-            }
-        }
     });
-});
+
+    // anonymous factory intercepts requests
+    $httpProvider.interceptors.push(['$q', '$location', '$rootScope', '$injector', function($q, $location, $rootScope, $injector) {
+        return {
+            'responseError': function(rejection) {
+                if(rejection.status === 401){ //rejection.config.url
+                    $rootScope.$broadcast("mms.unauthorized", rejection);
+                }
+                return $q.reject(rejection);
+            },
+            response: function(response) {
+                if (response.status === 202) {
+                    $rootScope.$broadcast("mms.working", response);
+                }
+                response.status = 501;
+                return response;
+            }
+        };
+    }]);
+
+    $httpProvider.useApplyAsync(true);
+}]);
