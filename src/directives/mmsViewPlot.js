@@ -17,7 +17,10 @@ function mmsViewPlot($compile, $window) {
                    console.log("error ignored"); 
                 }
             }
-            domElement[0].innerHTML = '<figure><mms-' + scope.plot.ptype + '-plot plot="plot"></mms-' + scope.plot.ptype + '-plot><figcaption>{{plot.title}}</figcaption></figure>';
+			if (scope.plot.config.startsWith("d3-")) //d3-zoomable-sunburst
+				domElement[0].innerHTML = '<figure><mms-' + scope.plot.config + '-plot plot="plot"></mms-' + scope.plot.config + '-plot><figcaption>{{plot.title}}</figcaption></figure>';
+			else
+				domElement[0].innerHTML = '<figure><mms-' + scope.plot.ptype + '-plot plot="plot"></mms-' + scope.plot.ptype + '-plot><figcaption>{{plot.title}}</figcaption></figure>';
             $compile(domElement.contents())(scope);
         }
     };
